@@ -28,20 +28,19 @@ const (
 
 type pollUntil func(string) (bool, error)
 
-// OctaviaController Controller to manage octavia resources
-type OctaviaController struct {
+// LBaaSController Controller to manage LBaaS resources
+type LBaaSController struct {
 	compute  *gophercloud.ServiceClient
 	network  *gophercloud.ServiceClient
 	subnetID string
 }
 
 func init() {
-	backend.Register("openstack-lbaasv2", NewOctaviaController)
+	backend.Register("openstack-lbaasv2", NewLBaaSController)
 }
 
-// NewOctaviaController creates a Octavia controller
-func NewOctaviaController(conf map[string]string) (backend.BackendController, error) {
-
+// NewLBaaSController creates a LBaaS controller
+func NewLBaaSController(conf map[string]string) (backend.BackendController, error) {
 	authOptions := gophercloud.AuthOptions{
 		IdentityEndpoint: os.Getenv("OS_AUTH_URL"),
 		Username:         os.Getenv("OS_USERNAME"),
@@ -70,35 +69,34 @@ func NewOctaviaController(conf map[string]string) (backend.BackendController, er
 		glog.Fatalf("Failed to find network endpoint: %v", err)
 	}
 
-	octControl := OctaviaController{
+	lbaasControl := LBaaSController{
 		compute:  compute,
 		network:  network,
 		subnetID: os.Getenv("OS_SUBNET_ID"),
 	}
-
-	return &octControl, nil
+	return &lbaasControl, nil
 }
 
 // Name returns the name of the backend controller
-func (octavia *OctaviaController) Name() string {
-	return "OctaviaController"
+func (lbaas *LBaaSController) Name() string {
+	return "LBaaSController"
 }
 
 // Create a new lbaas loadbalancer resource
-func (octavia *OctaviaController) Create(name string, config backend.BackendConfig) {
+func (lbaas *LBaaSController) Create(name string, config backend.BackendConfig) {
 	if config.NodePort == 0 {
 		glog.Errorf("Nodeport is needed for loadbalancer")
 		return
 	}
 
 	// Delete current load balancer for this service if it exist
-	octavia.Delete(name)
+	lbaas.Delete(name)
 
 	lbName := getResourceName(LOADBALANCER, name)
-	lb, err := loadbalancers.Create(octavia.network, loadbalancers.CreateOpts{
+	lb, err := loadbalancers.Create(lbaas.network, loadbalancers.CreateOpts{
 		Name:         lbName,
 		AdminStateUp: loadbalancers.Up,
-		VipSubnetID:  octavia.subnetID,
+		VipSubnetID:  lbaas.subnetID,
 	}).Extract()
 	if err != nil {
 		glog.Errorf("Could not create loadbalancer %v. %v", lbName, err)
@@ -107,11 +105,11 @@ func (octavia *OctaviaController) Create(name string, config backend.BackendConf
 	glog.Infof("Created loadbalancer %v. ID: %v", lbName, lb.ID)
 
 	// Wait for load balancer resource to be ACTIVE state
-	octavia.waitLoadbalancerReady(lb.ID)
+	lbaas.waitLoadbalancerReady(lb.ID)
 
 	// Create a listener resouce for the loadbalancer
 	listenerName := getResourceName(LISTENER, name)
-	listener, err := listeners.Create(octavia.network, listeners.CreateOpts{
+	listener, err := listeners.Create(lbaas.network, listeners.CreateOpts{
 		Protocol:       listeners.Protocol(config.Protocol),
 		Name:           listenerName,
 		LoadbalancerID: lb.ID,
@@ -120,17 +118,17 @@ func (octavia *OctaviaController) Create(name string, config backend.BackendConf
 	}).Extract()
 	if err != nil {
 		glog.Errorf("Could not create listener %v. %v", listenerName, err)
-		defer octavia.deleteOctaviaResource(lb.ID, LOADBALANCER, lb.ID)
+		defer lbaas.deleteLBaaSResource(lb.ID, LOADBALANCER, lb.ID)
 		return
 	}
 	glog.Infof("Created listener %v. ID: %v", listenerName, listener.ID)
 
 	// Wait for load balancer resource to be ACTIVE state
-	octavia.waitLoadbalancerReady(lb.ID)
+	lbaas.waitLoadbalancerReady(lb.ID)
 
 	// Create a pool resouce for the listener
 	poolName := getResourceName(POOL, name)
-	pool, err := pools.Create(octavia.network, pools.CreateOpts{
+	pool, err := pools.Create(lbaas.network, pools.CreateOpts{
 		LBMethod:   pools.LBMethodRoundRobin,
 		Protocol:   pools.Protocol(config.Protocol),
 		Name:       poolName,
@@ -138,35 +136,35 @@ func (octavia *OctaviaController) Create(name string, config backend.BackendConf
 	}).Extract()
 	if err != nil {
 		glog.Errorf("Could not create pool %v. %v", poolName, err)
-		defer octavia.deleteOctaviaResource(lb.ID, LOADBALANCER, lb.ID)
-		defer octavia.deleteOctaviaResource(lb.ID, LISTENER, listener.ID)
+		defer lbaas.deleteLBaaSResource(lb.ID, LOADBALANCER, lb.ID)
+		defer lbaas.deleteLBaaSResource(lb.ID, LISTENER, listener.ID)
 		return
 	}
 	glog.Infof("Created pool %v. ID: %v", poolName, pool.ID)
 	// Wait for load balancer resource to be ACTIVE state
-	octavia.waitLoadbalancerReady(lb.ID)
+	lbaas.waitLoadbalancerReady(lb.ID)
 
 	// Associate servers to the pool
 	for _, ip := range config.BindIPs {
-		member, err := pools.CreateAssociateMember(octavia.network, pool.ID, pools.MemberCreateOpts{
-			SubnetID:     octavia.subnetID,
+		member, err := pools.CreateAssociateMember(lbaas.network, pool.ID, pools.MemberCreateOpts{
+			SubnetID:     lbaas.subnetID,
 			Address:      ip,
 			ProtocolPort: config.NodePort,
 		}).ExtractMember()
 		if err != nil {
 			glog.Errorf("Could not create member for %v. %v", ip, err)
-			defer octavia.deleteOctaviaResource(lb.ID, LOADBALANCER, lb.ID)
-			defer octavia.deleteOctaviaResource(lb.ID, LISTENER, listener.ID)
-			defer octavia.deleteOctaviaResource(lb.ID, POOL, pool.ID)
+			defer lbaas.deleteLBaaSResource(lb.ID, LOADBALANCER, lb.ID)
+			defer lbaas.deleteLBaaSResource(lb.ID, LISTENER, listener.ID)
+			defer lbaas.deleteLBaaSResource(lb.ID, POOL, pool.ID)
 			return
 		}
 		glog.Infof("Created member for %v. ID: %v", ip, member.ID)
 		// Wait for load balancer resource to be ACTIVE state
-		octavia.waitLoadbalancerReady(lb.ID)
+		lbaas.waitLoadbalancerReady(lb.ID)
 	}
 
 	// Create health monitor for the pool
-	monitor, err := monitors.Create(octavia.network, monitors.CreateOpts{
+	monitor, err := monitors.Create(lbaas.network, monitors.CreateOpts{
 		Type:       string(config.Protocol),
 		PoolID:     pool.ID,
 		Delay:      20,
@@ -175,23 +173,22 @@ func (octavia *OctaviaController) Create(name string, config backend.BackendConf
 	}).Extract()
 	if err != nil {
 		glog.Errorf("Could not create health monitor for pool %v. %v", poolName, err)
-		defer octavia.deleteOctaviaResource(lb.ID, LOADBALANCER, lb.ID)
-		defer octavia.deleteOctaviaResource(lb.ID, LISTENER, listener.ID)
-		defer octavia.deleteOctaviaResource(lb.ID, POOL, pool.ID)
+		defer lbaas.deleteLBaaSResource(lb.ID, LOADBALANCER, lb.ID)
+		defer lbaas.deleteLBaaSResource(lb.ID, LISTENER, listener.ID)
+		defer lbaas.deleteLBaaSResource(lb.ID, POOL, pool.ID)
 		return
 	}
 	glog.Infof("Created health monitor for pool %v. ID: %v", poolName, monitor.ID)
 	// Wait for load balancer resource to be ACTIVE state
-	octavia.waitLoadbalancerReady(lb.ID)
+	lbaas.waitLoadbalancerReady(lb.ID)
 }
 
 // Delete the lbaas loadbalancer resource
-func (octavia *OctaviaController) Delete(name string) {
-
+func (lbaas *LBaaSController) Delete(name string) {
 	// Find loadbalancer by name
 	lbName := getResourceName(LOADBALANCER, name)
 	opts := loadbalancers.ListOpts{Name: lbName}
-	pager := loadbalancers.List(octavia.network, opts)
+	pager := loadbalancers.List(lbaas.network, opts)
 	lbErr := pager.EachPage(func(page pagination.Page) (bool, error) {
 		loadbalancerList, err := loadbalancers.ExtractLoadbalancers(page)
 		if err != nil {
@@ -211,18 +208,18 @@ func (octavia *OctaviaController) Delete(name string) {
 		lbID := loadbalancerList[0].ID // assuming there is only one loadbalancer with this name
 		listenerList := loadbalancerList[0].Listeners
 		if len(listenerList) != 0 {
-			listener, _ := listeners.Get(octavia.network, listenerList[0].ID).Extract() // assuming there is only one listener
+			listener, _ := listeners.Get(lbaas.network, listenerList[0].ID).Extract() // assuming there is only one listener
 			poolID := listener.DefaultPoolID
 			if poolID != "" {
-				pool, _ := pools.Get(octavia.network, poolID).Extract()
+				pool, _ := pools.Get(lbaas.network, poolID).Extract()
 				if pool.MonitorID != "" {
-					octavia.deleteOctaviaResource(lbID, MONITOR, pool.MonitorID)
+					lbaas.deleteLBaaSResource(lbID, MONITOR, pool.MonitorID)
 				}
-				octavia.deleteOctaviaResource(lbID, POOL, poolID)
+				lbaas.deleteLBaaSResource(lbID, POOL, poolID)
 			}
-			octavia.deleteOctaviaResource(lbID, LISTENER, listener.ID)
+			lbaas.deleteLBaaSResource(lbID, LISTENER, listener.ID)
 		}
-		octavia.deleteOctaviaResource(lbID, LOADBALANCER, lbID)
+		lbaas.deleteLBaaSResource(lbID, LOADBALANCER, lbID)
 		return true, nil
 	})
 
@@ -233,15 +230,15 @@ func (octavia *OctaviaController) Delete(name string) {
 }
 
 // AddNodeHandler creates new member for this node in every loadbalancer pool
-func (octavia *OctaviaController) AddNodeHandler(ip string, configMapNodePortMap map[string]int) {
+func (lbaas *LBaaSController) AddNodeHandler(ip string, configMapNodePortMap map[string]int) {
 	for configmapName, nodePort := range configMapNodePortMap {
 		poolName := getResourceName(POOL, configmapName)
-		poolID, err := octavia.getPoolIDFromName(poolName)
+		poolID, err := lbaas.getPoolIDFromName(poolName)
 		if err != nil {
 			glog.Errorf("Could not get pool %v. %v", poolName, err)
 			continue
 		}
-		memberID, err := octavia.createMemberResource(poolID, ip, nodePort)
+		memberID, err := lbaas.createMemberResource(poolID, ip, nodePort)
 		if err != nil {
 			glog.Errorf("Could not create member for pool %v. IP: %v. Port: %v", poolName, ip, nodePort)
 			continue
@@ -251,20 +248,20 @@ func (octavia *OctaviaController) AddNodeHandler(ip string, configMapNodePortMap
 }
 
 // DeleteNodeHandler deletes member for this node
-func (octavia *OctaviaController) DeleteNodeHandler(ip string, configMapNodePortMap map[string]int) {
+func (lbaas *LBaaSController) DeleteNodeHandler(ip string, configMapNodePortMap map[string]int) {
 	for configmapName := range configMapNodePortMap {
 		poolName := getResourceName(POOL, configmapName)
-		poolID, err := octavia.getPoolIDFromName(poolName)
+		poolID, err := lbaas.getPoolIDFromName(poolName)
 		if err != nil {
 			glog.Errorf("Could not get pool for %v. %v", poolName, err)
 			continue
 		}
-		memberID, err := octavia.getMemberIDFromIP(poolID, ip)
+		memberID, err := lbaas.getMemberIDFromIP(poolID, ip)
 		if err != nil {
 			glog.Errorf("Could not get member for pool %v. IP: %v.", poolName, ip)
 			continue
 		}
-		err = pools.DeleteMember(octavia.network, poolID, memberID).ExtractErr()
+		err = pools.DeleteMember(lbaas.network, poolID, memberID).ExtractErr()
 		if err != nil {
 			glog.Errorf("Could not get member for pool %v. memberID: %v", poolName, memberID)
 			continue
@@ -274,18 +271,18 @@ func (octavia *OctaviaController) DeleteNodeHandler(ip string, configMapNodePort
 }
 
 // UpdateNodeHandler update IP of the member for this node if it exists. If it doesnt, it will create a new member
-func (octavia *OctaviaController) UpdateNodeHandler(oldIP string, newIP string, configMapNodePortMap map[string]int) {
+func (lbaas *LBaaSController) UpdateNodeHandler(oldIP string, newIP string, configMapNodePortMap map[string]int) {
 	for configmapName, nodePort := range configMapNodePortMap {
 		poolName := getResourceName(POOL, configmapName)
-		poolID, err := octavia.getPoolIDFromName(poolName)
+		poolID, err := lbaas.getPoolIDFromName(poolName)
 		if err != nil {
 			glog.Errorf("Could not get pool for %v. %v", poolName, err)
 			continue
 		}
-		memberID, err := octavia.getMemberIDFromIP(poolID, oldIP)
+		memberID, err := lbaas.getMemberIDFromIP(poolID, oldIP)
 		if err != nil {
 			glog.Warningf("Could not get member for pool %v. IP: %v. Creating...", poolName, oldIP)
-			memberID, err := octavia.createMemberResource(poolID, newIP, nodePort)
+			memberID, err := lbaas.createMemberResource(poolID, newIP, nodePort)
 			if err != nil {
 				glog.Errorf("Could not create member for pool %v. IP: %v. Port: %v", poolName, newIP, nodePort)
 				continue
@@ -295,7 +292,7 @@ func (octavia *OctaviaController) UpdateNodeHandler(oldIP string, newIP string, 
 		}
 
 		// Update member. Change IP
-		res, err := pools.UpdateAssociateMember(octavia.network, poolID, memberID, pools.MemberUpdateOpts{
+		res, err := pools.UpdateAssociateMember(lbaas.network, poolID, memberID, pools.MemberUpdateOpts{
 			Address:      newIP,
 			ProtocolPort: nodePort,
 		}).ExtractMember()
@@ -310,8 +307,8 @@ func getResourceName(resourceType string, names ...string) string {
 	return strings.Join(names, "-") + "-" + resourceType
 }
 
-func (octavia *OctaviaController) getPoolIDFromName(poolName string) (string, error) {
-	pager := pools.List(octavia.network, pools.ListOpts{Name: poolName})
+func (lbaas *LBaaSController) getPoolIDFromName(poolName string) (string, error) {
+	pager := pools.List(lbaas.network, pools.ListOpts{Name: poolName})
 	var poolID string
 	poolErr := pager.EachPage(func(page pagination.Page) (bool, error) {
 		poolList, err := pools.ExtractPools(page)
@@ -335,9 +332,9 @@ func (octavia *OctaviaController) getPoolIDFromName(poolName string) (string, er
 	return poolID, poolErr
 }
 
-func (octavia *OctaviaController) createMemberResource(poolID string, ip string, nodePort int) (string, error) {
-	member, err := pools.CreateAssociateMember(octavia.network, poolID, pools.MemberCreateOpts{
-		SubnetID:     octavia.subnetID,
+func (lbaas *LBaaSController) createMemberResource(poolID string, ip string, nodePort int) (string, error) {
+	member, err := pools.CreateAssociateMember(lbaas.network, poolID, pools.MemberCreateOpts{
+		SubnetID:     lbaas.subnetID,
 		Address:      ip,
 		ProtocolPort: nodePort,
 	}).ExtractMember()
@@ -347,9 +344,9 @@ func (octavia *OctaviaController) createMemberResource(poolID string, ip string,
 	return member.ID, nil
 }
 
-func (octavia *OctaviaController) getMemberIDFromIP(poolID string, ip string) (string, error) {
+func (lbaas *LBaaSController) getMemberIDFromIP(poolID string, ip string) (string, error) {
 	var memberID string
-	pager := pools.ListAssociateMembers(octavia.network, poolID, pools.MemberListOpts{Address: ip})
+	pager := pools.ListAssociateMembers(lbaas.network, poolID, pools.MemberListOpts{Address: ip})
 	memberErr := pager.EachPage(func(page pagination.Page) (bool, error) {
 		membersList, err := pools.ExtractMembers(page)
 		// There should only be one member that has this IP.
@@ -372,9 +369,9 @@ func (octavia *OctaviaController) getMemberIDFromIP(poolID string, ip string) (s
 	return memberID, memberErr
 }
 
-func (octavia *OctaviaController) waitLoadbalancerReady(lbID string) {
+func (lbaas *LBaaSController) waitLoadbalancerReady(lbID string) {
 	// Wait for load balancer resource to be ACTIVE state
-	_, err := resourceReady(octavia.checkLoadbalancerReady, lbID, 2, 300)
+	_, err := resourceReady(lbaas.checkLoadbalancerReady, lbID, 2, 300)
 	if err != nil {
 		glog.Errorf("Loadbalancer %v resource did not go ACTIVE. %v", lbID, err)
 		return
@@ -399,8 +396,8 @@ func resourceReady(f pollUntil, resourceID string, interval int64, timeout int64
 	}
 }
 
-func (octavia *OctaviaController) checkLoadbalancerReady(lbID string) (bool, error) {
-	lb, err := loadbalancers.Get(octavia.network, lbID).Extract()
+func (lbaas *LBaaSController) checkLoadbalancerReady(lbID string) (bool, error) {
+	lb, err := loadbalancers.Get(lbaas.network, lbID).Extract()
 	if err != nil {
 		return true, err
 	}
@@ -411,26 +408,26 @@ func (octavia *OctaviaController) checkLoadbalancerReady(lbID string) (bool, err
 	return false, nil
 }
 
-func (octavia *OctaviaController) deleteOctaviaResource(lbID string, resourceType string, resourceID string) {
+func (lbaas *LBaaSController) deleteLBaaSResource(lbID string, resourceType string, resourceID string) {
 	glog.Errorf("Deleting %v %v.", resourceType, resourceID)
 	var err error
 	switch {
 	case resourceType == LOADBALANCER:
-		err = loadbalancers.Delete(octavia.network, resourceID).Err
+		err = loadbalancers.Delete(lbaas.network, resourceID).Err
 	case resourceType == LISTENER:
-		err = listeners.Delete(octavia.network, resourceID).Err
+		err = listeners.Delete(lbaas.network, resourceID).Err
 	case resourceType == POOL:
-		err = pools.Delete(octavia.network, resourceID).Err
+		err = pools.Delete(lbaas.network, resourceID).Err
 	case resourceType == MONITOR:
-		err = monitors.Delete(octavia.network, resourceID).Err
+		err = monitors.Delete(lbaas.network, resourceID).Err
 	}
 	if err != nil {
 		glog.Errorf("Could not delete %v %v. %v", resourceType, resourceID, err)
 		return
 	}
 	if resourceType != LOADBALANCER {
-		// Wait for load balancer resource to be ACTIVE state
-		octavia.waitLoadbalancerReady(lbID)
+		// Wait for load balancer resource to be ACTIVE state d
+		lbaas.waitLoadbalancerReady(lbID)
 	}
 	glog.Errorf("%v %v Deleted", resourceType, resourceID)
 }

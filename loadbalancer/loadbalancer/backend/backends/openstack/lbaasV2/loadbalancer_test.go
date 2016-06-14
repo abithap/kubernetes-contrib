@@ -95,12 +95,12 @@ func TestGetPoolIDFromName(t *testing.T) {
 	defer th.TeardownHTTP()
 	handlePoolListSuccessfully(t)
 
-	octControl := OctaviaController{
+	lbaasControl := LBaaSController{
 		compute:  fake.ServiceClient(),
 		network:  fake.ServiceClient(),
 		subnetID: os.Getenv("OS_SUBNET_ID"),
 	}
-	poolID, err := octControl.getPoolIDFromName("web")
+	poolID, err := lbaasControl.getPoolIDFromName("web")
 	if err != nil {
 		t.Errorf("Error is: %v ", err)
 	}
@@ -116,12 +116,12 @@ func TestGetMemberIDFromIP(t *testing.T) {
 	defer th.TeardownHTTP()
 	HandleMemberListSuccessfully(t)
 
-	octControl := OctaviaController{
+	lbaasControl := LBaaSController{
 		compute:  fake.ServiceClient(),
 		network:  fake.ServiceClient(),
 		subnetID: os.Getenv("OS_SUBNET_ID"),
 	}
-	memberID, err := octControl.getMemberIDFromIP("332abe93-f488-41ba-870b-2ac66be7f853", "web")
+	memberID, err := lbaasControl.getMemberIDFromIP("332abe93-f488-41ba-870b-2ac66be7f853", "web")
 	if err != nil {
 		t.Errorf("Error is: %v ", err)
 	}
