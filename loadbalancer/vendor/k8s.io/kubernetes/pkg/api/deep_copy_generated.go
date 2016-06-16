@@ -154,6 +154,7 @@ func init() {
 		DeepCopy_api_ReplicationControllerList,
 		DeepCopy_api_ReplicationControllerSpec,
 		DeepCopy_api_ReplicationControllerStatus,
+		DeepCopy_api_ResourceFieldSelector,
 		DeepCopy_api_ResourceQuota,
 		DeepCopy_api_ResourceQuotaList,
 		DeepCopy_api_ResourceQuotaSpec,
@@ -666,8 +667,23 @@ func DeepCopy_api_DeleteOptions(in DeleteOptions, out *DeleteOptions, c *convers
 
 func DeepCopy_api_DownwardAPIVolumeFile(in DownwardAPIVolumeFile, out *DownwardAPIVolumeFile, c *conversion.Cloner) error {
 	out.Path = in.Path
-	if err := DeepCopy_api_ObjectFieldSelector(in.FieldRef, &out.FieldRef, c); err != nil {
-		return err
+	if in.FieldRef != nil {
+		in, out := in.FieldRef, &out.FieldRef
+		*out = new(ObjectFieldSelector)
+		if err := DeepCopy_api_ObjectFieldSelector(*in, *out, c); err != nil {
+			return err
+		}
+	} else {
+		out.FieldRef = nil
+	}
+	if in.ResourceFieldRef != nil {
+		in, out := in.ResourceFieldRef, &out.ResourceFieldRef
+		*out = new(ResourceFieldSelector)
+		if err := DeepCopy_api_ResourceFieldSelector(*in, *out, c); err != nil {
+			return err
+		}
+	} else {
+		out.ResourceFieldRef = nil
 	}
 	return nil
 }
@@ -817,6 +833,15 @@ func DeepCopy_api_EnvVarSource(in EnvVarSource, out *EnvVarSource, c *conversion
 		}
 	} else {
 		out.FieldRef = nil
+	}
+	if in.ResourceFieldRef != nil {
+		in, out := in.ResourceFieldRef, &out.ResourceFieldRef
+		*out = new(ResourceFieldSelector)
+		if err := DeepCopy_api_ResourceFieldSelector(*in, *out, c); err != nil {
+			return err
+		}
+	} else {
+		out.ResourceFieldRef = nil
 	}
 	if in.ConfigMapKeyRef != nil {
 		in, out := in.ConfigMapKeyRef, &out.ConfigMapKeyRef
@@ -1576,6 +1601,15 @@ func DeepCopy_api_NodeStatus(in NodeStatus, out *NodeStatus, c *conversion.Clone
 	} else {
 		out.Images = nil
 	}
+	if in.VolumesInUse != nil {
+		in, out := in.VolumesInUse, &out.VolumesInUse
+		*out = make([]UniqueVolumeName, len(in))
+		for i := range in {
+			(*out)[i] = in[i]
+		}
+	} else {
+		out.VolumesInUse = nil
+	}
 	return nil
 }
 
@@ -1681,6 +1715,13 @@ func DeepCopy_api_OwnerReference(in OwnerReference, out *OwnerReference, c *conv
 	out.Kind = in.Kind
 	out.Name = in.Name
 	out.UID = in.UID
+	if in.Controller != nil {
+		in, out := in.Controller, &out.Controller
+		*out = new(bool)
+		**out = *in
+	} else {
+		out.Controller = nil
+	}
 	return nil
 }
 
@@ -1746,6 +1787,15 @@ func DeepCopy_api_PersistentVolumeClaimSpec(in PersistentVolumeClaimSpec, out *P
 		}
 	} else {
 		out.AccessModes = nil
+	}
+	if in.Selector != nil {
+		in, out := in.Selector, &out.Selector
+		*out = new(unversioned.LabelSelector)
+		if err := unversioned.DeepCopy_unversioned_LabelSelector(*in, *out, c); err != nil {
+			return err
+		}
+	} else {
+		out.Selector = nil
 	}
 	if err := DeepCopy_api_ResourceRequirements(in.Resources, &out.Resources, c); err != nil {
 		return err
@@ -2430,11 +2480,7 @@ func DeepCopy_api_Preconditions(in Preconditions, out *Preconditions, c *convers
 	if in.UID != nil {
 		in, out := in.UID, &out.UID
 		*out = new(types.UID)
-		if newVal, err := c.DeepCopy(*in); err != nil {
-			return err
-		} else {
-			**out = newVal.(types.UID)
-		}
+		**out = *in
 	} else {
 		out.UID = nil
 	}
@@ -2569,6 +2615,15 @@ func DeepCopy_api_ReplicationControllerStatus(in ReplicationControllerStatus, ou
 	out.Replicas = in.Replicas
 	out.FullyLabeledReplicas = in.FullyLabeledReplicas
 	out.ObservedGeneration = in.ObservedGeneration
+	return nil
+}
+
+func DeepCopy_api_ResourceFieldSelector(in ResourceFieldSelector, out *ResourceFieldSelector, c *conversion.Cloner) error {
+	out.ContainerName = in.ContainerName
+	out.Resource = in.Resource
+	if err := resource.DeepCopy_resource_Quantity(in.Divisor, &out.Divisor, c); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -2973,6 +3028,13 @@ func DeepCopy_api_ServiceSpec(in ServiceSpec, out *ServiceSpec, c *conversion.Cl
 	}
 	out.LoadBalancerIP = in.LoadBalancerIP
 	out.SessionAffinity = in.SessionAffinity
+	if in.LoadBalancerSourceRanges != nil {
+		in, out := in.LoadBalancerSourceRanges, &out.LoadBalancerSourceRanges
+		*out = make([]string, len(in))
+		copy(*out, in)
+	} else {
+		out.LoadBalancerSourceRanges = nil
+	}
 	return nil
 }
 
