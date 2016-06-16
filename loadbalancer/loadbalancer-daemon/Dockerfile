@@ -31,6 +31,6 @@ RUN ln -sf /proc/1/fd/1 /var/log/nginx/access.log \
 	&& ln -sf /proc/1/fd/2 /var/log/nginx/error.log
 
 COPY loadbalancer-daemon /
-COPY backends/nginx/nginx.tmpl /
+COPY backend/backends/nginx/nginx.tmpl /
 
 ENTRYPOINT ["/loadbalancer-daemon"]
