@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path"
 	"strconv"
+	"sync"
 
 	factory "k8s.io/contrib/loadbalancer/loadbalancer-daemon/backend"
 
@@ -63,6 +64,8 @@ type Location struct {
 func init() {
 	factory.Register("nginx", NewNGINXController)
 }
+
+var reloadMutex sync.Mutex
 
 // NewNGINXController creates a NGINX controller
 func NewNGINXController() (factory.BackendController, error) {
@@ -152,7 +155,9 @@ func templateIt(config NGINXConfig, filename string) {
 
 // Reload reloads NGINX
 func reload() {
+	reloadMutex.Lock()
 	shellOut("nginx -s reload")
+	reloadMutex.Unlock()
 }
 
 // Start starts NGINX
