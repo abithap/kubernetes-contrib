@@ -141,7 +141,7 @@ func createBackendConfig(cm map[string]string, group string) factory.BackendConf
 		BindIp:            cm[group+".bind-ip"],
 		BindPort:          bindPort,
 		TargetServiceName: cm[group+".target-service-name"],
-		TargetServiceId:   cm[group+".target-service-id"],
+		TargetIP:          cm[group+".target-ip"],
 		TargetPort:        targetPort,
 		SSL:               ssl,
 		SSLPort:           sslPort,

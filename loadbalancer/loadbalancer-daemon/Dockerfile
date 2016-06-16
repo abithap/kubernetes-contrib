@@ -17,7 +17,10 @@ RUN apt-get install -y --no-install-recommends \
   kmod \
   ca-certificates \
   iproute2 \
-  ipvsadm && \
+  ipvsadm \
+  net-tools \
+  iputils-ping \
+  curl && \
   apt-get clean && \
   rm -rf /var/lib/apt/lists/*
 

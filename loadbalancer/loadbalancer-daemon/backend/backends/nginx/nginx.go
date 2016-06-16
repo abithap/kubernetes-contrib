@@ -98,6 +98,10 @@ func (nginx *NGINXController) AddConfig(name string, config factory.BackendConfi
 	glog.Infof("Updating NGINX configuration")
 	glog.Infof("Received config %s: %v", name, config)
 	nginxConfig := generateNGINXCfg(nginx.nginxCertsPath, name, config)
+	if nginxConfig == (NGINXConfig{}) {
+		glog.Errorf("Could not generate nginx config for %v", name)
+		return
+	}
 
 	var configFile string
 	if config.Path != "" {
@@ -197,6 +201,12 @@ stream {
 
 func generateNGINXCfg(certPath string, name string, config factory.BackendConfig) NGINXConfig {
 
+	var nginxConfig NGINXConfig
+	if config.TargetServiceName == "" || config.TargetIP == "" {
+		glog.Errorf("Target service name or IP was not provided in config %v.", name)
+		return nginxConfig
+	}
+
 	upsName := getNameForUpstream(name, config.Host, config.TargetServiceName)
 	upstream := createUpstream(upsName, config)
 
@@ -221,17 +231,19 @@ func generateNGINXCfg(certPath string, name string, config factory.BackendConfig
 	}
 	server.Location = loc
 
-	return NGINXConfig{
+	nginxConfig = NGINXConfig{
 		Upstream: upstream,
 		Server:   server,
 	}
+
+	return nginxConfig
 }
 
 func createUpstream(name string, backend factory.BackendConfig) Upstream {
 	ups := Upstream{
 		Name: name,
 		UpstreamServer: UpstreamServer{
-			Address: backend.TargetServiceName,
+			Address: backend.TargetIP,
 			Port:    strconv.Itoa(backend.TargetPort),
 		},
 	}

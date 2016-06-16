@@ -25,7 +25,7 @@ func TestGenerateNGINXCfg(t *testing.T) {
 		Upstream: Upstream{
 			Name: "nginxApp-localhost-helloApp",
 			UpstreamServer: UpstreamServer{
-				Address: "helloApp",
+				Address: "10.0.0.1",
 				Port:    "8080",
 			},
 		},
@@ -38,7 +38,7 @@ func TestGenerateNGINXCfg(t *testing.T) {
 				Upstream: Upstream{
 					Name: "nginxApp-localhost-helloApp",
 					UpstreamServer: UpstreamServer{
-						Address: "helloApp",
+						Address: "10.0.0.1",
 						Port:    "8080",
 					},
 				},
@@ -63,7 +63,7 @@ func generateExampleBackendObject() factory.BackendConfig {
 		BindIp:            "127.0.0.1",
 		BindPort:          80,
 		TargetServiceName: "helloApp",
-		TargetServiceId:   "123",
+		TargetIP:          "10.0.0.1",
 		TargetPort:        8080,
 		SSL:               false,
 		Path:              "/hello",
