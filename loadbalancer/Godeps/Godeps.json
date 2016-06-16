@@ -1,7 +1,7 @@
 {
 	"ImportPath": "k8s.io/contrib/loadbalancer",
 	"GoVersion": "go1.6",
-	"GodepVersion": "v71",
+	"GodepVersion": "v74",
 	"Packages": [
 		"./..."
 	],
@@ -358,6 +358,10 @@
 		},
 		{
 			"ImportPath": "golang.org/x/net/http2/hpack",
+			"Rev": "d7bf3545bb0dacf009c535b3d3fbf53ac0a339ab"
+		},
+		{
+			"ImportPath": "golang.org/x/net/lex/httplex",
 			"Rev": "d7bf3545bb0dacf009c535b3d3fbf53ac0a339ab"
 		},
 		{
@@ -914,11 +918,6 @@
 		},
 		{
 			"ImportPath": "k8s.io/kubernetes/pkg/util/deployment",
-			"Comment": "v1.4.0-alpha.0-226-g4a040d1",
-			"Rev": "4a040d11ca131058d0e28823be33b29c380c3166"
-		},
-		{
-			"ImportPath": "k8s.io/kubernetes/pkg/util/diff",
 			"Comment": "v1.4.0-alpha.0-226-g4a040d1",
 			"Rev": "4a040d11ca131058d0e28823be33b29c380c3166"
 		},
