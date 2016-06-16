@@ -140,7 +140,9 @@ type ObjectMeta struct {
 	Annotations map[string]string `json:"annotations,omitempty"`
 
 	// List of objects depended by this object. If ALL objects in the list have
-	// been deleted, this object will be garbage collected.
+	// been deleted, this object will be garbage collected. If this object is managed by a controller,
+	// then an entry in this list will point to this controller, with the controller field set to true.
+	// There cannot be more than one managing controller.
 	OwnerReferences []OwnerReference `json:"ownerReferences,omitempty"`
 
 	// Must be empty before the object is deleted from the registry. Each entry
@@ -304,6 +306,8 @@ type PersistentVolumeSpec struct {
 	// ClaimRef is part of a bi-directional binding between PersistentVolume and PersistentVolumeClaim.
 	// ClaimRef is expected to be non-nil when bound.
 	// claim.VolumeName is the authoritative bind between PV and PVC.
+	// When set to non-nil value, PVC.Spec.Selector of the referenced PVC is
+	// ignored, i.e. labels of this PV do not need to match PVC selector.
 	ClaimRef *ObjectReference `json:"claimRef,omitempty"`
 	// Optional: what happens to a persistent volume when released from its claim.
 	PersistentVolumeReclaimPolicy PersistentVolumeReclaimPolicy `json:"persistentVolumeReclaimPolicy,omitempty"`
@@ -364,9 +368,13 @@ type PersistentVolumeClaimList struct {
 type PersistentVolumeClaimSpec struct {
 	// Contains the types of access modes required
 	AccessModes []PersistentVolumeAccessMode `json:"accessModes,omitempty"`
+	// A label query over volumes to consider for binding. This selector is
+	// ignored when VolumeName is set
+	Selector *unversioned.LabelSelector `json:"selector,omitempty"`
 	// Resources represents the minimum resources required
 	Resources ResourceRequirements `json:"resources,omitempty"`
-	// VolumeName is the binding reference to the PersistentVolume backing this claim
+	// VolumeName is the binding reference to the PersistentVolume backing this
+	// claim. When set to non-empty value Selector is not evaluated
 	VolumeName string `json:"volumeName,omitempty"`
 }
 
@@ -641,13 +649,13 @@ type RBDVolumeSource struct {
 	// TODO: how do we prevent errors in the filesystem from compromising the machine
 	FSType string `json:"fsType,omitempty"`
 	// Optional: RadosPool is the rados pool name,default is rbd
-	RBDPool string `json:"pool"`
+	RBDPool string `json:"pool,omitempty"`
 	// Optional: RBDUser is the rados user name, default is admin
-	RadosUser string `json:"user"`
+	RadosUser string `json:"user,omitempty"`
 	// Optional: Keyring is the path to key ring for RBDUser, default is /etc/ceph/keyring
-	Keyring string `json:"keyring"`
-	// Optional: SecretRef is name of the authentication secret for RBDUser, default is empty.
-	SecretRef *LocalObjectReference `json:"secretRef"`
+	Keyring string `json:"keyring,omitempty"`
+	// Optional: SecretRef is name of the authentication secret for RBDUser, default is nil.
+	SecretRef *LocalObjectReference `json:"secretRef,omitempty"`
 	// Optional: Defaults to false (read/write). ReadOnly here will force
 	// the ReadOnly setting in VolumeMounts.
 	ReadOnly bool `json:"readOnly,omitempty"`
@@ -706,7 +714,10 @@ type DownwardAPIVolumeFile struct {
 	// Required: Path is  the relative path name of the file to be created. Must not be absolute or contain the '..' path. Must be utf-8 encoded. The first item of the relative path must not start with '..'
 	Path string `json:"path"`
 	// Required: Selects a field of the pod: only annotations, labels, name and  namespace are supported.
-	FieldRef ObjectFieldSelector `json:"fieldRef"`
+	FieldRef *ObjectFieldSelector `json:"fieldRef,omitempty"`
+	// Selects a resource of the container: only resources limits and requests
+	// (limits.cpu, limits.memory, requests.cpu and requests.memory) are currently supported.
+	ResourceFieldRef *ResourceFieldSelector `json:"resourceFieldRef,omitempty"`
 }
 
 // AzureFile represents an Azure File Service mount on the host and bind mount to the pod.
@@ -811,6 +822,9 @@ type EnvVar struct {
 type EnvVarSource struct {
 	// Selects a field of the pod; only name and namespace are supported.
 	FieldRef *ObjectFieldSelector `json:"fieldRef,omitempty"`
+	// Selects a resource of the container: only resources limits and requests
+	// (limits.cpu, limits.memory, requests.cpu and requests.memory) are currently supported.
+	ResourceFieldRef *ResourceFieldSelector `json:"resourceFieldRef,omitempty"`
 	// Selects a key of a ConfigMap.
 	ConfigMapKeyRef *ConfigMapKeySelector `json:"configMapKeyRef,omitempty"`
 	// Selects a key of a secret in the pod's namespace.
@@ -825,6 +839,16 @@ type ObjectFieldSelector struct {
 	APIVersion string `json:"apiVersion"`
 	// Required: Path of the field to select in the specified API version
 	FieldPath string `json:"fieldPath"`
+}
+
+// ResourceFieldSelector represents container resources (cpu, memory) and their output format
+type ResourceFieldSelector struct {
+	// Container name: required for volumes, optional for env vars
+	ContainerName string `json:"containerName,omitempty"`
+	// Required: resource to select
+	Resource string `json:"resource"`
+	// Specifies the output format of the exposed resources, defaults to "1"
+	Divisor resource.Quantity `json:"divisor,omitempty"`
 }
 
 // Selects a key from a ConfigMap.
@@ -1735,8 +1759,13 @@ type ServiceSpec struct {
 	// This field will be ignored if the cloud-provider does not support the feature.
 	LoadBalancerIP string `json:"loadBalancerIP,omitempty"`
 
-	// Required: Supports "ClientIP" and "None".  Used to maintain session affinity.
+	// Optional: Supports "ClientIP" and "None".  Used to maintain session affinity.
 	SessionAffinity ServiceAffinity `json:"sessionAffinity,omitempty"`
+
+	// Optional: If specified and supported by the platform, this will restrict traffic through the cloud-provider
+	// load-balancer will be restricted to the specified client IPs. This field will be ignored if the
+	// cloud-provider does not support the feature."
+	LoadBalancerSourceRanges []string `json:"loadBalancerSourceRanges,omitempty"`
 }
 
 type ServicePort struct {
@@ -1958,7 +1987,11 @@ type NodeStatus struct {
 	NodeInfo NodeSystemInfo `json:"nodeInfo,omitempty"`
 	// List of container images on this node
 	Images []ContainerImage `json:"images,omitempty"`
+	// List of attachable volumes in use (mounted) by the node.
+	VolumesInUse []UniqueVolumeName `json:"volumesInUse,omitempty"`
 }
+
+type UniqueVolumeName string
 
 // Describe a container image
 type ContainerImage struct {
@@ -1993,6 +2026,8 @@ const (
 	NodeOutOfDisk NodeConditionType = "OutOfDisk"
 	// NodeMemoryPressure means the kubelet is under pressure due to insufficient available memory.
 	NodeMemoryPressure NodeConditionType = "MemoryPressure"
+	// NodeNetworkUnavailable means that network for the node is not correctly configured.
+	NodeNetworkUnavailable NodeConditionType = "NetworkUnavailable"
 )
 
 type NodeCondition struct {
@@ -2084,6 +2119,7 @@ type FinalizerName string
 // These are internal finalizer values to Kubernetes, must be qualified name unless defined here
 const (
 	FinalizerKubernetes FinalizerName = "kubernetes"
+	FinalizerOrphan     string        = "orphan"
 )
 
 // NamespaceStatus is information about the current status of a Namespace.
@@ -2304,6 +2340,8 @@ type OwnerReference struct {
 	// UID of the referent.
 	// More info: http://releases.k8s.io/HEAD/docs/user-guide/identifiers.md#uids
 	UID types.UID `json:"uid"`
+	// If true, this reference points to the managing controller.
+	Controller *bool `json:"controller,omitempty"`
 }
 
 // ObjectReference contains enough information to let you inspect or modify the referred object.

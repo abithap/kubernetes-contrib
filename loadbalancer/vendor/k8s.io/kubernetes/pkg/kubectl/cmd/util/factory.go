@@ -38,7 +38,9 @@ import (
 
 	"k8s.io/kubernetes/federation/apis/federation"
 	"k8s.io/kubernetes/pkg/api"
+	apierrors "k8s.io/kubernetes/pkg/api/errors"
 	"k8s.io/kubernetes/pkg/api/meta"
+	"k8s.io/kubernetes/pkg/api/service"
 	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/api/validation"
 	"k8s.io/kubernetes/pkg/apimachinery"
@@ -47,8 +49,8 @@ import (
 	"k8s.io/kubernetes/pkg/apis/autoscaling"
 	"k8s.io/kubernetes/pkg/apis/batch"
 	"k8s.io/kubernetes/pkg/apis/extensions"
-	"k8s.io/kubernetes/pkg/apis/metrics"
 	"k8s.io/kubernetes/pkg/apis/policy"
+	"k8s.io/kubernetes/pkg/apis/rbac"
 	"k8s.io/kubernetes/pkg/client/restclient"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
 	clientset "k8s.io/kubernetes/pkg/client/unversioned/adapters/internalclientset"
@@ -146,6 +148,8 @@ type Factory struct {
 	// can range over in order to determine if the user has specified an editor
 	// of their choice.
 	EditorEnvs func() []string
+	// PrintObjectSpecificMessage prints object-specific messages on the provided writer
+	PrintObjectSpecificMessage func(obj runtime.Object, out io.Writer)
 }
 
 const (
@@ -155,6 +159,7 @@ const (
 	ServiceV2GeneratorName                      = "service/v2"
 	ServiceAccountV1GeneratorName               = "serviceaccount/v1"
 	HorizontalPodAutoscalerV1Beta1GeneratorName = "horizontalpodautoscaler/v1beta1"
+	HorizontalPodAutoscalerV1GeneratorName      = "horizontalpodautoscaler/v1"
 	DeploymentV1Beta1GeneratorName              = "deployment/v1beta1"
 	JobV1Beta1GeneratorName                     = "job/v1beta1"
 	JobV1GeneratorName                          = "job/v1"
@@ -181,6 +186,7 @@ func DefaultGenerators(cmdName string) map[string]kubectl.Generator {
 	}
 	generators["autoscale"] = map[string]kubectl.Generator{
 		HorizontalPodAutoscalerV1Beta1GeneratorName: kubectl.HorizontalPodAutoscalerV1Beta1{},
+		HorizontalPodAutoscalerV1GeneratorName:      kubectl.HorizontalPodAutoscalerV1{},
 	}
 	generators["namespace"] = map[string]kubectl.Generator{
 		NamespaceV1GeneratorName: kubectl.NamespaceGeneratorV1{},
@@ -256,7 +262,18 @@ func NewFactory(optionalClientConfig clientcmd.ClientConfig) *Factory {
 				client, err := clients.ClientForVersion(&unversioned.GroupVersion{Version: "v1"})
 				CheckErr(err)
 
-				versions, gvks, err := GetThirdPartyGroupVersions(client.Discovery())
+				var versions []unversioned.GroupVersion
+				var gvks []unversioned.GroupVersionKind
+				retries := 3
+				for i := 0; i < retries; i++ {
+					versions, gvks, err = GetThirdPartyGroupVersions(client.Discovery())
+					// Retry if we got a NotFound error, because user may delete
+					// a thirdparty group when the GetThirdPartyGroupVersions is
+					// running.
+					if err == nil || !apierrors.IsNotFound(err) {
+						break
+					}
+				}
 				CheckErr(err)
 				if len(versions) > 0 {
 					priorityMapper, ok := mapper.RESTMapper.(meta.PriorityRESTMapper)
@@ -302,14 +319,14 @@ func NewFactory(optionalClientConfig clientcmd.ClientConfig) *Factory {
 				Delegate: outputRESTMapper,
 				ResourcePriority: []unversioned.GroupVersionResource{
 					{Group: api.GroupName, Version: meta.AnyVersion, Resource: meta.AnyResource},
+					{Group: autoscaling.GroupName, Version: meta.AnyVersion, Resource: meta.AnyResource},
 					{Group: extensions.GroupName, Version: meta.AnyVersion, Resource: meta.AnyResource},
-					{Group: metrics.GroupName, Version: meta.AnyVersion, Resource: meta.AnyResource},
 					{Group: federation.GroupName, Version: meta.AnyVersion, Resource: meta.AnyResource},
 				},
 				KindPriority: []unversioned.GroupVersionKind{
 					{Group: api.GroupName, Version: meta.AnyVersion, Kind: meta.AnyKind},
+					{Group: autoscaling.GroupName, Version: meta.AnyVersion, Kind: meta.AnyKind},
 					{Group: extensions.GroupName, Version: meta.AnyVersion, Kind: meta.AnyKind},
-					{Group: metrics.GroupName, Version: meta.AnyVersion, Kind: meta.AnyKind},
 					{Group: federation.GroupName, Version: meta.AnyVersion, Kind: meta.AnyKind},
 				},
 			}
@@ -347,6 +364,8 @@ func NewFactory(optionalClientConfig clientcmd.ClientConfig) *Factory {
 				return c.ExtensionsClient.RESTClient, nil
 			case federation.GroupName:
 				return clients.FederationClientForVersion(&mappingVersion)
+			case rbac.GroupName:
+				return c.RbacClient.RESTClient, nil
 			default:
 				if !registered.IsThirdPartyAPIGroupVersion(gvk.GroupVersion()) {
 					return nil, fmt.Errorf("unknown api group/version: %s", gvk.String())
@@ -358,7 +377,8 @@ func NewFactory(optionalClientConfig clientcmd.ClientConfig) *Factory {
 				gv := gvk.GroupVersion()
 				cfg.GroupVersion = &gv
 				cfg.APIPath = "/apis"
-				cfg.Codec = thirdpartyresourcedata.NewCodec(c.ExtensionsClient.RESTClient.Codec(), gvk.Kind)
+				cfg.Codec = thirdpartyresourcedata.NewCodec(c.ExtensionsClient.RESTClient.Codec(), gvk)
+				cfg.NegotiatedSerializer = thirdpartyresourcedata.NewNegotiatedSerializer(api.Codecs, gvk.Kind, gv, gv)
 				return restclient.RESTClientFor(cfg)
 			}
 		},
@@ -383,10 +403,14 @@ func NewFactory(optionalClientConfig clientcmd.ClientConfig) *Factory {
 			return nil, fmt.Errorf("no description has been implemented for %q", mapping.GroupVersionKind.Kind)
 		},
 		Decoder: func(toInternal bool) runtime.Decoder {
+			var decoder runtime.Decoder
 			if toInternal {
-				return api.Codecs.UniversalDecoder()
+				decoder = api.Codecs.UniversalDecoder()
+			} else {
+				decoder = api.Codecs.UniversalDeserializer()
 			}
-			return api.Codecs.UniversalDeserializer()
+			return thirdpartyresourcedata.NewDecoder(decoder, "")
+
 		},
 		JSONEncoder: func() runtime.Encoder {
 			return api.Codecs.LegacyCodec(registered.EnabledVersions()...)
@@ -424,11 +448,11 @@ func NewFactory(optionalClientConfig clientcmd.ClientConfig) *Factory {
 				}
 				return kubectl.MakeLabels(t.Spec.Selector.MatchLabels), nil
 			default:
-				gvk, err := api.Scheme.ObjectKind(object)
+				gvks, _, err := api.Scheme.ObjectKinds(object)
 				if err != nil {
 					return "", err
 				}
-				return "", fmt.Errorf("cannot extract pod selector from %v", gvk)
+				return "", fmt.Errorf("cannot extract pod selector from %v", gvks[0])
 			}
 		},
 		PortsForObject: func(object runtime.Object) ([]string, error) {
@@ -445,11 +469,11 @@ func NewFactory(optionalClientConfig clientcmd.ClientConfig) *Factory {
 			case *extensions.ReplicaSet:
 				return getPorts(t.Spec.Template.Spec), nil
 			default:
-				gvk, err := api.Scheme.ObjectKind(object)
+				gvks, _, err := api.Scheme.ObjectKinds(object)
 				if err != nil {
 					return nil, err
 				}
-				return nil, fmt.Errorf("cannot extract ports from %v", gvk)
+				return nil, fmt.Errorf("cannot extract ports from %v", gvks[0])
 			}
 		},
 		ProtocolsForObject: func(object runtime.Object) (map[string]string, error) {
@@ -466,11 +490,11 @@ func NewFactory(optionalClientConfig clientcmd.ClientConfig) *Factory {
 			case *extensions.ReplicaSet:
 				return getProtocols(t.Spec.Template.Spec), nil
 			default:
-				gvk, err := api.Scheme.ObjectKind(object)
+				gvks, _, err := api.Scheme.ObjectKinds(object)
 				if err != nil {
 					return nil, err
 				}
-				return nil, fmt.Errorf("cannot extract protocols from %v", gvk)
+				return nil, fmt.Errorf("cannot extract protocols from %v", gvks[0])
 			}
 		},
 		LabelsForObject: func(object runtime.Object) (map[string]string, error) {
@@ -528,11 +552,11 @@ func NewFactory(optionalClientConfig clientcmd.ClientConfig) *Factory {
 				return c.Pods(pod.Namespace).GetLogs(pod.Name, opts), nil
 
 			default:
-				gvk, err := api.Scheme.ObjectKind(object)
+				gvks, _, err := api.Scheme.ObjectKinds(object)
 				if err != nil {
 					return nil, err
 				}
-				return nil, fmt.Errorf("cannot get the logs from %v", gvk)
+				return nil, fmt.Errorf("cannot get the logs from %v", gvks[0])
 			}
 		},
 		PauseObject: func(object runtime.Object) (bool, error) {
@@ -550,11 +574,11 @@ func NewFactory(optionalClientConfig clientcmd.ClientConfig) *Factory {
 				_, err := c.Extensions().Deployments(t.Namespace).Update(t)
 				return false, err
 			default:
-				gvk, err := api.Scheme.ObjectKind(object)
+				gvks, _, err := api.Scheme.ObjectKinds(object)
 				if err != nil {
 					return false, err
 				}
-				return false, fmt.Errorf("cannot pause %v", gvk)
+				return false, fmt.Errorf("cannot pause %v", gvks[0])
 			}
 		},
 		ResumeObject: func(object runtime.Object) (bool, error) {
@@ -572,11 +596,11 @@ func NewFactory(optionalClientConfig clientcmd.ClientConfig) *Factory {
 				_, err := c.Extensions().Deployments(t.Namespace).Update(t)
 				return false, err
 			default:
-				gvk, err := api.Scheme.ObjectKind(object)
+				gvks, _, err := api.Scheme.ObjectKinds(object)
 				if err != nil {
 					return false, err
 				}
-				return false, fmt.Errorf("cannot resume %v", gvk)
+				return false, fmt.Errorf("cannot resume %v", gvks[0])
 			}
 		},
 		Scaler: func(mapping *meta.RESTMapping) (kubectl.Scaler, error) {
@@ -709,11 +733,11 @@ func NewFactory(optionalClientConfig clientcmd.ClientConfig) *Factory {
 			case *api.Pod:
 				return t, nil
 			default:
-				gvk, err := api.Scheme.ObjectKind(object)
+				gvks, _, err := api.Scheme.ObjectKinds(object)
 				if err != nil {
 					return nil, err
 				}
-				return nil, fmt.Errorf("cannot attach to %v: not implemented", gvk)
+				return nil, fmt.Errorf("cannot attach to %v: not implemented", gvks[0])
 			}
 		},
 		// UpdatePodSpecForObject update the pod specification for the provided object
@@ -743,6 +767,33 @@ func NewFactory(optionalClientConfig clientcmd.ClientConfig) *Factory {
 		},
 		EditorEnvs: func() []string {
 			return []string{"KUBE_EDITOR", "EDITOR"}
+		},
+		PrintObjectSpecificMessage: func(obj runtime.Object, out io.Writer) {
+			switch obj := obj.(type) {
+			case *api.Service:
+				if obj.Spec.Type == api.ServiceTypeNodePort {
+					msg := fmt.Sprintf(
+						`You have exposed your service on an external port on all nodes in your
+cluster.  If you want to expose this service to the external internet, you may
+need to set up firewall rules for the service port(s) (%s) to serve traffic.
+
+See http://releases.k8s.io/HEAD/docs/user-guide/services-firewalls.md for more details.
+`,
+						makePortsString(obj.Spec.Ports, true))
+					out.Write([]byte(msg))
+				}
+
+				if _, ok := obj.Annotations[service.AnnotationLoadBalancerSourceRangesKey]; ok {
+					msg := fmt.Sprintf(
+						`You are using service annotation [service.beta.kubernetes.io/load-balancer-source-ranges].
+It has been promoted to field [loadBalancerSourceRanges] in service spec. This annotation will be deprecated in the future.
+Please use the loadBalancerSourceRanges field instead.
+
+See http://releases.k8s.io/HEAD/docs/user-guide/services-firewalls.md for more details.
+`)
+					out.Write([]byte(msg))
+				}
+			}
 		},
 	}
 }
@@ -820,6 +871,20 @@ func (f *Factory) BindFlags(flags *pflag.FlagSet) {
 func (f *Factory) BindExternalFlags(flags *pflag.FlagSet) {
 	// any flags defined by external projects (not part of pflags)
 	flags.AddGoFlagSet(flag.CommandLine)
+}
+
+func makePortsString(ports []api.ServicePort, useNodePort bool) string {
+	pieces := make([]string, len(ports))
+	for ix := range ports {
+		var port int32
+		if useNodePort {
+			port = ports[ix].NodePort
+		} else {
+			port = ports[ix].Port
+		}
+		pieces[ix] = fmt.Sprintf("%s:%d", strings.ToLower(string(ports[ix].Protocol)), port)
+	}
+	return strings.Join(pieces, ",")
 }
 
 func getPorts(spec api.PodSpec) []string {
@@ -1017,6 +1082,12 @@ func (c *clientSwaggerSchema) ValidateBytes(data []byte) error {
 		}
 		return getSchemaAndValidate(c.c.BatchClient.RESTClient, data, "apis/", gvk.GroupVersion().String(), c.cacheDir, c)
 	}
+	if gvk.Group == rbac.GroupName {
+		if c.c.RbacClient == nil {
+			return errors.New("unable to validate: no rbac client")
+		}
+		return getSchemaAndValidate(c.c.RbacClient.RESTClient, data, "apis/", gvk.GroupVersion().String(), c.cacheDir, c)
+	}
 	if registered.IsThirdPartyAPIGroupVersion(gvk.GroupVersion()) {
 		// Don't attempt to validate third party objects
 		return nil
@@ -1092,12 +1163,12 @@ func DefaultClientConfig(flags *pflag.FlagSet) clientcmd.ClientConfig {
 
 // PrintObject prints an api object given command line flags to modify the output format
 func (f *Factory) PrintObject(cmd *cobra.Command, mapper meta.RESTMapper, obj runtime.Object, out io.Writer) error {
-	gvk, err := api.Scheme.ObjectKind(obj)
+	gvks, _, err := api.Scheme.ObjectKinds(obj)
 	if err != nil {
 		return err
 	}
 
-	mapping, err := mapper.RESTMapping(gvk.GroupKind())
+	mapping, err := mapper.RESTMapping(gvks[0].GroupKind())
 	if err != nil {
 		return err
 	}

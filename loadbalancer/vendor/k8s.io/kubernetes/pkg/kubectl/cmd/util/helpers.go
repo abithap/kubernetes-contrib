@@ -31,6 +31,7 @@ import (
 	"k8s.io/kubernetes/pkg/api/meta"
 	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/apimachinery/registered"
+	"k8s.io/kubernetes/pkg/apis/extensions"
 	"k8s.io/kubernetes/pkg/client/typed/discovery"
 	"k8s.io/kubernetes/pkg/client/unversioned/clientcmd"
 	"k8s.io/kubernetes/pkg/kubectl"
@@ -488,6 +489,10 @@ func ShouldRecord(cmd *cobra.Command, info *resource.Info) bool {
 	return GetRecordFlag(cmd) || ContainsChangeCause(info)
 }
 
+// GetThirdPartyGroupVersions returns the thirdparty "group/versions"s and
+// resources supported by the server. A user may delete a thirdparty resource
+// when this function is running, so this function may return a "NotFound" error
+// due to the race.
 func GetThirdPartyGroupVersions(discovery discovery.DiscoveryInterface) ([]unversioned.GroupVersion, []unversioned.GroupVersionKind, error) {
 	result := []unversioned.GroupVersion{}
 	gvks := []unversioned.GroupVersionKind{}
@@ -593,4 +598,16 @@ func ParsePairs(pairArgs []string, pairType string, supportRemove bool) (newPair
 	}
 
 	return
+}
+
+// MaybeConvertObject attempts to convert an object to a specific group/version.  If the object is
+// a third party resource it is simply passed through.
+func MaybeConvertObject(obj runtime.Object, gv unversioned.GroupVersion, converter runtime.ObjectConvertor) (runtime.Object, error) {
+	switch obj.(type) {
+	case *extensions.ThirdPartyResourceData:
+		// conversion is not supported for 3rd party objects
+		return obj, nil
+	default:
+		return converter.ConvertToVersion(obj, gv)
+	}
 }
