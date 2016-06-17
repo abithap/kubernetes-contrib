@@ -17,22 +17,23 @@ limitations under the License.
 package keepalived
 
 import (
-	"encoding/json"
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
-	"os/signal"
-	"syscall"
 	"text/template"
 	"time"
 
 	"github.com/golang/glog"
+	"k8s.io/kubernetes/pkg/util/dbus"
 	k8sexec "k8s.io/kubernetes/pkg/util/exec"
 	"k8s.io/kubernetes/pkg/util/iptables"
+	"k8s.io/kubernetes/pkg/util/sets"
+	"k8s.io/kubernetes/pkg/util/sysctl"
 )
 
 const (
-	iptablesChain = "KUBE-KEEPALIVED-VIP"
+	iptablesChain = "LOADBALANCER-DAEMON"
 	keepalivedCfg = "/etc/keepalived/keepalived.conf"
 	reloadQPS     = 10.0
 	resyncPeriod  = 10 * time.Second
@@ -50,137 +51,177 @@ var (
 	}
 )
 
-type vip struct {
-	Name      string
-	IP        string
-	Port      int
-	Protocol  string
-	LVSMethod string
-	Backends  []service
-}
-
-type service struct {
-	IP   string
-	Port int
-}
-
-type keepalived struct {
-	iface      string
-	ip         string
-	netmask    int
-	priority   int
-	nodes      []string
-	neighbors  []string
-	useUnicast bool
-	started    bool
-	vips       []string
-	tmpl       *template.Template
-	cmd        *exec.Cmd
+type KeepalivedController struct {
+	keepalived *Keepalived
 	ipt        iptables.Interface
+	command    *exec.Cmd
 }
 
-// WriteCfg creates a new keepalived configuration file.
-// In case of an error with the generation it returns the error
-func (k *keepalived) WriteCfg(svcs []vip) error {
-	w, err := os.Create(keepalivedCfg)
-	if err != nil {
-		return err
-	}
-	defer w.Close()
-
-	k.vips = getVIPs(svcs)
-
-	conf := make(map[string]interface{})
-	conf["iptablesChain"] = iptablesChain
-	conf["iface"] = k.iface
-	conf["myIP"] = k.ip
-	conf["netmask"] = k.netmask
-	conf["svcs"] = svcs
-	conf["vips"] = getVIPs(svcs)
-	conf["nodes"] = k.neighbors
-	conf["priority"] = k.priority
-	conf["useUnicast"] = k.useUnicast
-
-	if glog.V(2) {
-		b, _ := json.Marshal(conf)
-		glog.Infof("%v", string(b))
-	}
-
-	return k.tmpl.Execute(w, conf)
+type Keepalived struct {
+	Interface     string
+	Vips          sets.String
+	IptablesChain string
 }
 
-// getVIPs returns a list of the virtual IP addresses to be used in keepalived
-// without duplicates (a service can use more than one port)
-func getVIPs(svcs []vip) []string {
-	result := []string{}
-	for _, svc := range svcs {
-		result = appendIfMissing(result, svc.IP)
+// NewKeepalivedController creates a new keepalived controller
+func NewKeepalivedController(nodeInterface string) KeepalivedController {
+
+	// System init
+	// loadIPVModule()
+	changeSysctl()
+	// resetIPVS()
+
+	k := Keepalived{
+		Interface:     nodeInterface,
+		Vips:          sets.NewString(),
+		IptablesChain: iptablesChain,
 	}
 
-	return result
+	execer := k8sexec.New()
+	dbus := dbus.New()
+	iptInterface := iptables.New(execer, dbus, iptables.ProtocolIpv4)
+
+	kaControl := KeepalivedController{
+		keepalived: &k,
+		ipt:        iptInterface,
+	}
+
+	return kaControl
 }
 
 // Start starts a keepalived process in foreground.
 // In case of any error it will terminate the execution with a fatal error
-func (k *keepalived) Start() {
-	ae, err := k.ipt.EnsureChain(iptables.TableFilter, iptables.Chain(iptablesChain))
+func (k *KeepalivedController) Start() {
+	// ae, err := k.ipt.EnsureChain(iptables.TableFilter, iptables.Chain(iptablesChain))
+	// if err != nil {
+	// 	glog.Fatalf("unexpected error: %v", err)
+	// }
+	// if ae {
+	// 	glog.V(2).Infof("chain %v already existed", iptablesChain)
+	// }
+
+	// k.command = exec.Command("keepalived",
+	// 	"--dont-fork",
+	// 	"--log-console",
+	// 	"--release-vips",
+	// 	"--pid", "/keepalived.pid")
+
+	// k.command.Stdout = os.Stdout
+	// k.command.Stderr = os.Stderr
+
+	// // in case the pod is terminated we need to check that the vips are removed
+	// c := make(chan os.Signal, 2)
+	// signal.Notify(c, syscall.SIGTERM)
+	// go func() {
+	// 	for range c {
+	// 		glog.Warning("TERM signal received. freeing vips")
+	// 		for vip := range k.keepalived.Vips {
+	// 			k.freeVIP(vip)
+	// 		}
+
+	// 		err := k.ipt.FlushChain(iptables.TableFilter, iptables.Chain(iptablesChain))
+	// 		if err != nil {
+	// 			glog.V(2).Infof("unexpected error flushing iptables chain %v: %v", err, iptablesChain)
+	// 		}
+	// 	}
+	// }()
+
+	// if err := k.command.Start(); err != nil {
+	// 	glog.Errorf("keepalived error: %v", err)
+	// }
+
+	// if err := k.command.Wait(); err != nil {
+	// 	glog.Fatalf("keepalived error: %v", err)
+	// }
+	shellOut("service keepalived start")
+}
+
+// AddVIP adds a new VIP to the keepalived config and reload keepalived process
+func (k *KeepalivedController) AddVIP(vip string) {
+	glog.Infof("Adding VIP %v", vip)
+	if k.keepalived.Vips.Has(vip) {
+		glog.Errorf("VIP %v has already been added", vip)
+		return
+	}
+	k.keepalived.Vips.Insert(vip)
+	k.writeCfg()
+	k.reload()
+}
+
+// DeleteVIP removes a VIP from the keepalived config and reload keepalived process
+func (k *KeepalivedController) DeleteVIP(vip string) {
+	glog.Infof("Deleing VIP %v", vip)
+	if !k.keepalived.Vips.Has(vip) {
+		glog.Errorf("VIP %v had not been added.", vip)
+		return
+	}
+	k.keepalived.Vips.Delete(vip)
+	k.writeCfg()
+	k.reload()
+}
+
+// DeleteAllVIPs Delete all VIPs from the keepalived config and reload keepalived process
+func (k *KeepalivedController) DeleteAllVIPs() {
+	glog.Infof("Deleing all VIPs")
+	k.keepalived.Vips.Delete(k.keepalived.Vips.List()...)
+	k.writeCfg()
+	k.reload()
+}
+
+// writeCfg creates a new keepalived configuration file.
+// In case of an error with the generation it returns the error
+func (k *KeepalivedController) writeCfg() {
+	tmpl, err := template.New(keepalivedTmpl).ParseFiles(keepalivedTmpl)
+	w, err := os.Create(keepalivedCfg)
 	if err != nil {
-		glog.Fatalf("unexpected error: %v", err)
+		glog.Fatalf("Failed to open %v: %v", keepalivedCfg, err)
 	}
-	if ae {
-		glog.V(2).Infof("chain %v already existed", iptablesChain)
-	}
+	defer w.Close()
 
-	k.cmd = exec.Command("keepalived",
-		"--dont-fork",
-		"--log-console",
-		"--release-vips",
-		"--pid", "/keepalived.pid")
-
-	k.cmd.Stdout = os.Stdout
-	k.cmd.Stderr = os.Stderr
-
-	k.started = true
-
-	// in case the pod is terminated we need to check that the vips are removed
-	c := make(chan os.Signal, 2)
-	signal.Notify(c, syscall.SIGTERM)
-	go func() {
-		for range c {
-			glog.Warning("TERM signal received. removing vips")
-			for _, vip := range k.vips {
-				k.removeVIP(vip)
-			}
-
-			err := k.ipt.FlushChain(iptables.TableFilter, iptables.Chain(iptablesChain))
-			if err != nil {
-				glog.V(2).Infof("unexpected error flushing iptables chain %v: %v", err, iptablesChain)
-			}
-		}
-	}()
-
-	if err := k.cmd.Start(); err != nil {
-		glog.Errorf("keepalived error: %v", err)
-	}
-
-	if err := k.cmd.Wait(); err != nil {
-		glog.Fatalf("keepalived error: %v", err)
+	if err := tmpl.Execute(w, *k.keepalived); err != nil {
+		glog.Fatalf("Failed to write template %v", err)
 	}
 }
 
-// Reload sends SIGHUP to keepalived to reload the configuration.
-func (k *keepalived) Reload() error {
-	if !k.started {
-		// TODO: add a warning indicating that keepalived is not started?
-		return nil
-	}
-
+// reload sends SIGHUP to keepalived to reload the configuration.
+func (k *KeepalivedController) reload() {
 	glog.Info("reloading keepalived")
-	err := syscall.Kill(k.cmd.Process.Pid, syscall.SIGHUP)
+	// err := syscall.Kill(k.command.Process.Pid, syscall.SIGHUP)
+	// if err != nil {
+	// 	glog.Fatalf("Could not reload keepalived: %v", err)
+	// }
+	shellOut("service keepalived reload")
+}
+
+func (k *KeepalivedController) freeVIP(vip string) error {
+	glog.Infof("removing configured VIP %v", vip)
+	out, err := k8sexec.New().Command("ip", "addr", "del", vip+"/32", "dev", k.keepalived.Interface).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("error reloading keepalived: %v", err)
+		return fmt.Errorf("error reloading keepalived: %v\n%s", err, out)
+	}
+	return nil
+}
+
+// loadIPVModule load module require to use keepalived
+func loadIPVModule() error {
+	out, err := k8sexec.New().Command("modprobe", "ip_vs").CombinedOutput()
+	if err != nil {
+		glog.V(2).Infof("Error loading ip_vip: %s, %v", string(out), err)
+		return err
 	}
 
+	_, err = os.Stat("/proc/net/ip_vs")
+	return err
+}
+
+// changeSysctl changes the required network setting in /proc to get
+// keepalived working in the local system.
+func changeSysctl() error {
+	for k, v := range sysctlAdjustments {
+		if err := sysctl.SetSysctl(k, v); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -194,34 +235,25 @@ func resetIPVS() error {
 	return nil
 }
 
-func (k *keepalived) removeVIP(vip string) error {
-	glog.Infof("removing configured VIP %v", vip)
-	out, err := k8sexec.New().Command("ip", "addr", "del", vip+"/32", "dev", k.iface).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("error reloading keepalived: %v\n%s", err, out)
-	}
-	return nil
-}
+func shellOut(cmd string) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
 
-func (k *keepalived) loadTemplate() error {
-	tmpl, err := template.ParseFiles(keepalivedTmpl)
-	if err != nil {
-		return err
-	}
-	k.tmpl = tmpl
-	return nil
-}
+	glog.Infof("executing %s", cmd)
 
-func (k *keepalived) setupSignalHandlers() {
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		switch <-sigChan {
-		case syscall.SIGINT:
-		case syscall.SIGTERM:
-			for _, vip := range k.vips {
-				k.removeVIP(vip)
-			}
-		}
-	}()
+	command := exec.Command("sh", "-c", cmd)
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+
+	err := command.Start()
+	if err != nil {
+		glog.Fatalf("Failed to execute %v, err: %v", cmd, err)
+	}
+
+	err = command.Wait()
+	if err != nil {
+		glog.Errorf("Command %v stdout: %q", cmd, stdout.String())
+		glog.Errorf("Command %v stderr: %q", cmd, stderr.String())
+		glog.Fatalf("Command %v finished with error: %v", cmd, err)
+	}
 }

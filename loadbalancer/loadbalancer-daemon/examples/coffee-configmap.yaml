@@ -7,9 +7,10 @@ metadata:
 data:
     coffee.host: "foo.bar.com"
     coffee.namespace: "default"
+    coffee.bind-ip: "172.17.4.120"
     coffee.bind-port: "80"
-    coffee.target-name: "coffee-svc"
-    coffee.target-ip: "10.0.0.1"
+    coffee.target-service-name: "coffee-svc"
+    coffee.target-ip: "10.3.0.1"
     coffee.target-port: "80"
     coffee.ssl: "false"
     coffee.path: "/coffee"

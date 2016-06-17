@@ -145,7 +145,7 @@ func (lbaas *LBaaSController) Create(name string, config backend.BackendConfig) 
 	lbaas.waitLoadbalancerReady(lb.ID)
 
 	// Associate servers to the pool
-	for _, ip := range config.BindIPs {
+	for _, ip := range config.Nodes {
 		member, err := pools.CreateAssociateMember(lbaas.network, pool.ID, pools.MemberCreateOpts{
 			SubnetID:     lbaas.subnetID,
 			Address:      ip,

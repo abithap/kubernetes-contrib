@@ -19,7 +19,6 @@ package controllers
 import (
 	"time"
 
-	"k8s.io/kubernetes/pkg/client/cache"
 	"k8s.io/kubernetes/pkg/util/wait"
 	"k8s.io/kubernetes/pkg/util/workqueue"
 
@@ -83,15 +82,4 @@ func NewTaskQueue(syncFn func(string)) *taskQueue {
 		sync:       syncFn,
 		workerDone: make(chan struct{}),
 	}
-}
-
-// compareLinks returns true if the 2 self links are equal.
-func compareLinks(l1, l2 string) bool {
-	// TODO: These can be partial links
-	return l1 == l2 && l1 != ""
-}
-
-// StoreToConfigMapLister makes a Store that lists ConfigMap.
-type StoreToConfigMapLister struct {
-	cache.Store
 }

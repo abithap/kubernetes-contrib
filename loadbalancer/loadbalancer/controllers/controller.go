@@ -24,8 +24,8 @@ import (
 	"time"
 
 	"github.com/golang/glog"
-
 	"k8s.io/contrib/loadbalancer/loadbalancer/backend"
+	"k8s.io/contrib/loadbalancer/loadbalancer/utils"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/client/cache"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
@@ -49,6 +49,11 @@ type LoadBalancerController struct {
 	configMapQueue      *taskQueue
 	stopCh              chan struct{}
 	backendController   backend.BackendController
+}
+
+// StoreToConfigMapLister makes a Store that lists ConfigMap.
+type StoreToConfigMapLister struct {
+	cache.Store
 }
 
 // Values to verify the configmap object is a loadbalancer config
@@ -116,7 +121,7 @@ func NewLoadBalancerController(kubeClient *client.Client, resyncPeriod time.Dura
 			addNode := obj.(*api.Node)
 			if nodeReady(*addNode) {
 				configMapNodePortMap := lbController.getLBConfigMapNodePortMap()
-				ip, err := getNodeHostIP(*addNode)
+				ip, err := utils.GetNodeHostIP(*addNode)
 				if err != nil {
 					glog.Errorf("Error getting IP for node %v", addNode.Name)
 					return
@@ -127,7 +132,7 @@ func NewLoadBalancerController(kubeClient *client.Client, resyncPeriod time.Dura
 		DeleteFunc: func(obj interface{}) {
 			delNode := obj.(*api.Node)
 			if nodeReady(*delNode) {
-				ip, _ := getNodeHostIP(*delNode)
+				ip, _ := utils.GetNodeHostIP(*delNode)
 				configMapNodePortMap := lbController.getLBConfigMapNodePortMap()
 				go lbController.backendController.DeleteNodeHandler(*ip, configMapNodePortMap)
 			}
@@ -137,8 +142,8 @@ func NewLoadBalancerController(kubeClient *client.Client, resyncPeriod time.Dura
 			curNode := cur.(*api.Node)
 			if nodeReady(*curNode) {
 				oldNode := old.(*api.Node)
-				oldNodeIP, _ := getNodeHostIP(*oldNode)
-				curNodeIP, _ := getNodeHostIP(*curNode)
+				oldNodeIP, _ := utils.GetNodeHostIP(*oldNode)
+				curNodeIP, _ := utils.GetNodeHostIP(*curNode)
 				var configMapNodePortMap map[string]int
 				if oldNodeIP == nil {
 					glog.Infof("Updated node %v. IP set to %v. Syncing", curNode.Name, *curNodeIP)
@@ -254,7 +259,7 @@ func (lbController *LoadBalancerController) syncConfigMap(key string) {
 			TargetServiceName: serviceName,
 			Protocol:          string(servicePort.Protocol),
 			NodePort:          int(servicePort.NodePort),
-			BindIPs:           nodes,
+			Nodes:             nodes,
 			BindPort:          bindPort,
 			TargetPort:        targetServicePort,
 		}
@@ -312,7 +317,7 @@ func (lbController *LoadBalancerController) getReadyNodeIPs() ([]string, error) 
 		if n.Spec.Unschedulable {
 			continue
 		}
-		ip, err := getNodeHostIP(n)
+		ip, err := utils.GetNodeHostIP(n)
 		if err != nil {
 			glog.Errorf("Error getting node IP for %v. %v", n.Name, err)
 			continue
@@ -320,28 +325,6 @@ func (lbController *LoadBalancerController) getReadyNodeIPs() ([]string, error) 
 		nodeIPs = append(nodeIPs, *ip)
 	}
 	return nodeIPs, nil
-}
-
-// getNodeHostIP returns the provided node's IP, based on the priority:
-// 1. NodeExternalIP
-// 2. NodeLegacyHostIP
-// 3. NodeInternalIP
-func getNodeHostIP(node api.Node) (*string, error) {
-	addresses := node.Status.Addresses
-	addressMap := make(map[api.NodeAddressType][]api.NodeAddress)
-	for i := range addresses {
-		addressMap[addresses[i].Type] = append(addressMap[addresses[i].Type], addresses[i])
-	}
-	if addresses, ok := addressMap[api.NodeExternalIP]; ok {
-		return &addresses[0].Address, nil
-	}
-	if addresses, ok := addressMap[api.NodeLegacyHostIP]; ok {
-		return &addresses[0].Address, nil
-	}
-	if addresses, ok := addressMap[api.NodeInternalIP]; ok {
-		return &addresses[0].Address, nil
-	}
-	return nil, fmt.Errorf("Host IP unknown; known addresses: %v", addresses)
 }
 
 func (lbController *LoadBalancerController) getLBConfigMapNodePortMap() map[string]int {

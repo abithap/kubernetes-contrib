@@ -12,7 +12,8 @@ import (
 type BackendConfig struct {
 	Host              string
 	Namespace         string
-	BindIPs           []string
+	Nodes             []string
+	BindIP            string
 	BindPort          int
 	TargetServiceName string
 	TargetServiceID   string

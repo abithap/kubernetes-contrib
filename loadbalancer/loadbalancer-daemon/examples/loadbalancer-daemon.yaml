@@ -13,17 +13,20 @@ spec:
       labels:
         app: loadbalancer-daemon
     spec:
+      hostNetwork: true
       containers:
       - image: kokhang/loadbalancer-daemon:0.1
         imagePullPolicy: Always
         name: loadbalancer-daemon
         ports:
-        - containerPort: 80
-          hostPort: 80
-        - containerPort: 3306
-          hostPort: 3306
-      #   securityContext:
-      #     privileged: true
-      # hostNetwork: true
-
-
+        securityContext:
+          privileged: true
+        env:
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: POD_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace

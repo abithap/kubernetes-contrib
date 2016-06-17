@@ -1,15 +1,14 @@
-{{ $iface := .iface }}{{ $netmask := .netmask }}
+{{ $iface := .Interface }}
 
 global_defs {
   vrrp_version 3
-  vrrp_iptables {{ .iptablesChain }}
+  vrrp_iptables {{ .IptablesChain }}
 }
 
 vrrp_instance vips {
-  state BACKUP
+  state EQUAL
   interface {{ $iface }}
   virtual_router_id 50
-  priority {{ .priority }}
   nopreempt
   advert_int 1
 
@@ -17,35 +16,7 @@ vrrp_instance vips {
     {{ $iface }}
   }
 
-  {{ if .useUnicast }}
-  unicast_src_ip {{ .myIP }}
-  unicast_peer { {{ range .nodes }}
-    {{ . }}{{ end }}
-  }
-  {{ end }}
-
-  virtual_ipaddress { {{ range .vips }}
+  virtual_ipaddress { {{ range .Vips }}
     {{ . }}{{ end }}
   }
 }
-
-{{ range $i, $svc := .svcs }}
-# Service: {{ $svc.Name }}
-virtual_server {{ $svc.IP }} {{ $svc.Port }} {
-  delay_loop 5
-  lvs_sched wlc
-  lvs_method {{ $svc.LVSMethod }}
-  persistence_timeout 1800
-  protocol {{ $svc.Protocol }}
-
-  {{ range $j, $backend := $svc.Backends }}
-  real_server {{ $backend.IP }} {{ $backend.Port }} {
-    weight 1
-    TCP_CHECK {
-      connect_port {{ $backend.Port }}
-      connect_timeout 3
-    }
-  }
-{{ end }}
-}    
-{{ end }}
