@@ -96,7 +96,7 @@ metadata:
 ```
 
 1. To get coffee:
-  ```
+```
   $ curl http://10.0.0.10
   <!DOCTYPE html>
   <html>
@@ -117,6 +117,5 @@ metadata:
   <h2>My address is 10.244.0.3:80</h2>
   </body>
   </html>
-  ```
-
+```
 **Note**: Implementations are experimental and not suitable for using in production. This project is still in its early stage and many things are still in work in progress.
