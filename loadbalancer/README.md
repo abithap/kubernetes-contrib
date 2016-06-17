@@ -1,4 +1,4 @@
-# High Available Load balancer using configmap
+# High Available Multi-Backend Load balancer
 
 The project implements a load balancer controller that will provide a high available and load balancing access to HTTP and TCP kubernetes applications. It also provide SSL support for http apps.
 
@@ -95,10 +95,9 @@ metadata:
   uid: 08e12303-34db-11e6-87da-fa163eefe713
 ```
 
-1. We'll use ```curl```'s --resolve option to set the Host header of a request with ```foo.bar.com```.
-   To get coffee:
+1. To get coffee:
   ```
-  $ curl --resolve foo.bar.com:80:XXX.YYY.ZZZ.III http://foo.bar.com/coffee
+  $ curl http://10.0.0.10
   <!DOCTYPE html>
   <html>
   <head>
