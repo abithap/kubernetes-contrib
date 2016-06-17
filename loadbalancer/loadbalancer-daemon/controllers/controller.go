@@ -74,7 +74,7 @@ func NewConfigMapController(kubeClient *client.Client, resyncPeriod time.Duratio
 		// Initializing keepalived controller
 		nodeInterface := getNodeInterface(kubeClient)
 		configMapController.keepaliveController = keepalived.NewKeepalivedController(nodeInterface)
-		//configMapController.keepaliveController.Start()
+		configMapController.keepaliveController.Start()
 	}
 
 	configMapHandlers := framework.ResourceEventHandlerFuncs{

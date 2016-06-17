@@ -1,22 +1,14 @@
-{{ $iface := .Interface }}
-
-global_defs {
-  vrrp_version 3
-  vrrp_iptables {{ .IptablesChain }}
-}
-
 vrrp_instance vips {
-  state EQUAL
-  interface {{ $iface }}
+  interface {{ .interface  }}
   virtual_router_id 50
   nopreempt
   advert_int 1
 
   track_interface {
-    {{ $iface }}
+    {{ .interface  }}
   }
 
-  virtual_ipaddress { {{ range .Vips }}
+  virtual_ipaddress { {{ range .vips  }}
     {{ . }}{{ end }}
   }
 }
