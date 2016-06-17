@@ -426,7 +426,7 @@ func (lbaas *LBaaSController) deleteLBaaSResource(lbID string, resourceType stri
 		return
 	}
 	if resourceType != LOADBALANCER {
-		// Wait for load balancer resource to be ACTIVE state d
+		// Wait for load balancer resource to be ACTIVE state
 		lbaas.waitLoadbalancerReady(lbID)
 	}
 	glog.Errorf("%v %v Deleted", resourceType, resourceID)

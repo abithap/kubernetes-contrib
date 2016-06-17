@@ -20,7 +20,7 @@ var testMap2 = map[string]string{
 }
 
 func TestGetGroupName(t *testing.T) {
-	group := GetGroupName("group1.key1")
+	group := getGroupName("group1.key1")
 	if group != "group1" {
 		t.Errorf("In getGroupName(), expected group1. Got %s.", group)
 	}
@@ -48,7 +48,7 @@ func TestMapKeys(t *testing.T) {
 }
 
 func TestGetConfigMapDiff(t *testing.T) {
-	diff := GetConfigMapDiff(testMap1, testMap2)
+	diff := getConfigMapDiff(testMap1, testMap2)
 
 	for _, d := range diff {
 		switch d.key {

@@ -1,14 +1,10 @@
 package utils
 
 import (
-	"bytes"
 	"fmt"
-	"os/exec"
 	"reflect"
 	"sort"
 	"strings"
-
-	"github.com/golang/glog"
 
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/util/sets"
@@ -117,27 +113,4 @@ func GetNodeHostIP(node api.Node) (*string, error) {
 		return &addresses[0].Address, nil
 	}
 	return nil, fmt.Errorf("Host IP unknown; known addresses: %v", addresses)
-}
-
-func ShellOut(cmd string) {
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-
-	glog.Infof("executing %s", cmd)
-
-	command := exec.Command("sh", "-c", cmd)
-	command.Stdout = &stdout
-	command.Stderr = &stderr
-
-	err := command.Start()
-	if err != nil {
-		glog.Fatalf("Failed to execute %v, err: %v", cmd, err)
-	}
-
-	err = command.Wait()
-	if err != nil {
-		glog.Errorf("Command %v stdout: %q", cmd, stdout.String())
-		glog.Errorf("Command %v stderr: %q", cmd, stderr.String())
-		glog.Fatalf("Command %v finished with error: %v", cmd, err)
-	}
 }
