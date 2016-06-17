@@ -113,7 +113,7 @@ func NewConfigMapController(kubeClient *client.Client, resyncPeriod time.Duratio
 				for group := range updatedGroups {
 					if !groups.Has(group) {
 						if runKeepalived {
-							go configMapController.keepaliveController.DeleteVIP(curCM[group+".bind-ip"])
+							go configMapController.keepaliveController.DeleteVIP(oldCM[group+".bind-ip"])
 						}
 						go configMapController.backendController.DeleteConfig(group)
 					} else {
