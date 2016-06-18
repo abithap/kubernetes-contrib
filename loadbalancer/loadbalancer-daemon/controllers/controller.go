@@ -17,11 +17,16 @@ limitations under the License.
 package controllers
 
 import (
+	"os"
 	"reflect"
 	"strconv"
 	"time"
 
+	"github.com/golang/glog"
+
 	factory "k8s.io/contrib/loadbalancer/loadbalancer-daemon/backend"
+	"k8s.io/contrib/loadbalancer/loadbalancer-daemon/keepalived"
+	"k8s.io/contrib/loadbalancer/loadbalancer/utils"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/client/cache"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
@@ -39,6 +44,7 @@ type ConfigMapController struct {
 	configMapLister     StoreToConfigMapLister
 	stopCh              chan struct{}
 	backendController   factory.BackendController
+	keepaliveController keepalived.KeepalivedController
 }
 
 // StoreToConfigMapLister makes a Store that lists ConfigMap.
@@ -55,30 +61,45 @@ const (
 var keyFunc = framework.DeletionHandlingMetaNamespaceKeyFunc
 
 // NewConfigMapController creates a controller
-func NewConfigMapController(kubeClient *client.Client, resyncPeriod time.Duration, namespace string, controller factory.BackendController) (*ConfigMapController, error) {
+func NewConfigMapController(kubeClient *client.Client, resyncPeriod time.Duration, namespace string, controller factory.BackendController, runKeepalived bool) (*ConfigMapController, error) {
+
+	// Initializing configmap and backend controller
 	configMapController := ConfigMapController{
 		client:            kubeClient,
 		stopCh:            make(chan struct{}),
 		backendController: controller,
 	}
 
-	// Configmap has the form of
-	// k -> configGroupName.configKey
-	// v -> configValue
+	if runKeepalived {
+		// Initializing keepalived controller
+		nodeInterface := getNodeInterface(kubeClient)
+		configMapController.keepaliveController = keepalived.NewKeepalivedController(nodeInterface)
+		configMapController.keepaliveController.Start()
+	}
+
 	configMapHandlers := framework.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			cm := obj.(*api.ConfigMap)
 			cmData := cm.Data
-			groups := getConfigMapGroups(cmData)
+
+			groups := utils.GetConfigMapGroups(cmData)
 			for group := range groups {
+
+				if runKeepalived {
+					go configMapController.keepaliveController.AddVIP(cmData[group+".bind-ip"])
+				}
+
 				backendConfig := createBackendConfig(cmData, group)
 				go configMapController.backendController.AddConfig(group, backendConfig)
 			}
 		},
 		DeleteFunc: func(obj interface{}) {
+			if runKeepalived {
+				go configMapController.keepaliveController.DeleteAllVIPs()
+			}
 			cm := obj.(*api.ConfigMap)
 			cmData := cm.Data
-			groups := getConfigMapGroups(cmData)
+			groups := utils.GetConfigMapGroups(cmData)
 			for group := range groups {
 				go configMapController.backendController.DeleteConfig(group)
 			}
@@ -87,12 +108,18 @@ func NewConfigMapController(kubeClient *client.Client, resyncPeriod time.Duratio
 			if !reflect.DeepEqual(old, cur) {
 				oldCM := old.(*api.ConfigMap).Data
 				curCM := cur.(*api.ConfigMap).Data
-				groups := getConfigMapGroups(curCM)
-				updatedGroups := getUpdatedConfigMapGroups(oldCM, curCM)
+				groups := utils.GetConfigMapGroups(curCM)
+				updatedGroups := utils.GetUpdatedConfigMapGroups(oldCM, curCM)
 				for group := range updatedGroups {
 					if !groups.Has(group) {
+						if runKeepalived {
+							go configMapController.keepaliveController.DeleteVIP(oldCM[group+".bind-ip"])
+						}
 						go configMapController.backendController.DeleteConfig(group)
 					} else {
+						if runKeepalived {
+							go configMapController.keepaliveController.AddVIP(curCM[group+".bind-ip"])
+						}
 						backendConfig := createBackendConfig(curCM, group)
 						go configMapController.backendController.AddConfig(group, backendConfig)
 					}
@@ -150,4 +177,36 @@ func createBackendConfig(cm map[string]string, group string) factory.BackendConf
 		TlsKey:            "some key",  //TODO get certs from secret
 	}
 	return backendConfig
+}
+
+// Get node interface for the pod node IP
+func getNodeInterface(kubeClient *client.Client) string {
+
+	// Get node IP from the pod
+	podName := os.Getenv("POD_NAME")
+	podNs := os.Getenv("POD_NAMESPACE")
+
+	if podName == "" || podNs == "" {
+		glog.Fatalf("Please check the manifest (for missing POD_NAME or POD_NAMESPACE env variables)")
+	}
+
+	pod, _ := kubeClient.Pods(podNs).Get(podName)
+	if pod == nil {
+		glog.Fatalf("Unable to get POD information")
+	}
+
+	node, err := kubeClient.Nodes().Get(pod.Spec.NodeName)
+	if err != nil {
+		glog.Fatalf("Unable to get NODE with name %s", pod.Spec.NodeName)
+	}
+
+	nodeIP, err := utils.GetNodeHostIP(*node)
+	if err != nil {
+		glog.Fatalf("Error while getting IP for %s. %v", node.Name, err)
+	}
+	iface := interfaceByIP(*nodeIP)
+	if iface == "" {
+		glog.Fatalf("Cannot find interface for IP: %v", nodeIP)
+	}
+	return iface
 }

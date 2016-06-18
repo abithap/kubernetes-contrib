@@ -1,4 +1,4 @@
-package controllers
+package utils
 
 import (
 	"sort"
@@ -27,7 +27,7 @@ func TestGetGroupName(t *testing.T) {
 }
 
 func TestGetConfigMapGroups(t *testing.T) {
-	groups := getConfigMapGroups(testMap1)
+	groups := GetConfigMapGroups(testMap1)
 	if groups.Len() != 3 {
 		t.Errorf("In getConfigMapGroups(), expected length %v. Got %v.", 2, groups.Len())
 	}
@@ -38,7 +38,7 @@ func TestGetConfigMapGroups(t *testing.T) {
 
 func TestMapKeys(t *testing.T) {
 	expected := []string{"group0.key1", "group1.key1", "group1.key2", "group2.key1"}
-	keys := mapKeys(testMap1)
+	keys := MapKeys(testMap1)
 	sort.Strings(keys)
 	for i := 0; i < len(expected); i++ {
 		if keys[i] != expected[i] {
@@ -80,7 +80,7 @@ func TestGetConfigMapDiff(t *testing.T) {
 }
 
 func TestGetUpdatedConfigMapGroups(t *testing.T) {
-	updatedGroups := getUpdatedConfigMapGroups(testMap1, testMap2)
+	updatedGroups := GetUpdatedConfigMapGroups(testMap1, testMap2)
 	if !updatedGroups.HasAll("group1", "group2", "group3") {
 		t.Errorf("In getGroupName(), expected group1, group2 and group3. Got %v.", updatedGroups.List)
 	}

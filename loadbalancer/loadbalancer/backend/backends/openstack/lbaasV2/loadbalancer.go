@@ -145,7 +145,7 @@ func (lbaas *LBaaSController) Create(name string, config backend.BackendConfig) 
 	lbaas.waitLoadbalancerReady(lb.ID)
 
 	// Associate servers to the pool
-	for _, ip := range config.BindIPs {
+	for _, ip := range config.Nodes {
 		member, err := pools.CreateAssociateMember(lbaas.network, pool.ID, pools.MemberCreateOpts{
 			SubnetID:     lbaas.subnetID,
 			Address:      ip,
@@ -426,7 +426,7 @@ func (lbaas *LBaaSController) deleteLBaaSResource(lbID string, resourceType stri
 		return
 	}
 	if resourceType != LOADBALANCER {
-		// Wait for load balancer resource to be ACTIVE state d
+		// Wait for load balancer resource to be ACTIVE state
 		lbaas.waitLoadbalancerReady(lbID)
 	}
 	glog.Errorf("%v %v Deleted", resourceType, resourceID)

@@ -24,6 +24,8 @@ var (
 	watchNamespace = flag.String("watch-namespace", api.NamespaceAll,
 		`Namespace to watch for Configmap/Services/Endpoints. By default the controller
 		watches acrosss all namespaces`)
+	backendName = flags.String("backend", "openstack-lbaasv2",
+		`Backend to use. Default is openstack-lbaasv2.`)
 )
 
 func main() {
@@ -49,7 +51,7 @@ func main() {
 	}
 
 	backendController, err := backend.CreateBackendController(map[string]string{
-		"BACKEND": "openstack-lbaasv2",
+		"BACKEND": *backendName,
 	})
 	loadBalancerController, _ := controllers.NewLoadBalancerController(kubeClient, 30*time.Second, *watchNamespace, backendController)
 	loadBalancerController.Run()

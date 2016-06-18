@@ -27,6 +27,9 @@ var (
 
 	backendName = flags.String("backend", "nginx",
 		`Backend to use. Default is nginx.`)
+
+	runKeepalived = flags.Bool("with-keepalived", true,
+		`Backend to use. Default is nginx.`)
 )
 
 func main() {
@@ -57,6 +60,6 @@ func main() {
 	if err != nil {
 		glog.Fatalf("failed to create backend controller for %s: %v", *backendName, err)
 	}
-	configController, _ := controllers.NewConfigMapController(kubeClient, 30*time.Second, *watchNamespace, backendController)
+	configController, _ := controllers.NewConfigMapController(kubeClient, 30*time.Second, *watchNamespace, backendController, *runKeepalived)
 	configController.Run()
 }
