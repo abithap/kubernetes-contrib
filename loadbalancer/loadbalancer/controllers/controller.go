@@ -39,7 +39,7 @@ import (
 // ConfigMapController watches Kubernetes API for ConfigMap changes
 // and reconfigures backend when needed
 type LoadBalancerController struct {
-	client              *client.Client
+	client              utils.K8Client
 	configMapController *framework.Controller
 	configMapLister     StoreToConfigMapLister
 	svcController       *framework.Controller
@@ -65,7 +65,7 @@ const (
 var keyFunc = framework.DeletionHandlingMetaNamespaceKeyFunc
 
 // NewLoadBalancerController creates a controller
-func NewLoadBalancerController(kubeClient *client.Client, resyncPeriod time.Duration, namespace string, controller backend.BackendController) (*LoadBalancerController, error) {
+func NewLoadBalancerController(kubeClient utils.K8Client, resyncPeriod time.Duration, controller backend.BackendController) (*LoadBalancerController, error) {
 	lbController := LoadBalancerController{
 		client:            kubeClient,
 		stopCh:            make(chan struct{}),
@@ -88,8 +88,8 @@ func NewLoadBalancerController(kubeClient *client.Client, resyncPeriod time.Dura
 	}
 	lbController.configMapLister.Store, lbController.configMapController = framework.NewInformer(
 		&cache.ListWatch{
-			ListFunc:  configMapListFunc(kubeClient, namespace),
-			WatchFunc: configMapWatchFunc(kubeClient, namespace),
+			ListFunc:  configMapListFunc(kubeClient.Client, kubeClient.Namespace),
+			WatchFunc: configMapWatchFunc(kubeClient.Client, kubeClient.Namespace),
 		},
 		&api.ConfigMap{}, resyncPeriod, configMapHandlers)
 
@@ -111,8 +111,8 @@ func NewLoadBalancerController(kubeClient *client.Client, resyncPeriod time.Dura
 	}
 	lbController.svcLister.Store, lbController.svcController = framework.NewInformer(
 		&cache.ListWatch{
-			ListFunc:  serviceListFunc(kubeClient, namespace),
-			WatchFunc: serviceWatchFunc(kubeClient, namespace),
+			ListFunc:  serviceListFunc(kubeClient.Client, kubeClient.Namespace),
+			WatchFunc: serviceWatchFunc(kubeClient.Client, kubeClient.Namespace),
 		},
 		&api.Service{}, resyncPeriod, svcHandlers)
 
@@ -161,14 +161,14 @@ func NewLoadBalancerController(kubeClient *client.Client, resyncPeriod time.Dura
 	lbController.nodeLister.Store, lbController.nodeController = framework.NewInformer(
 		&cache.ListWatch{
 			ListFunc: func(opts api.ListOptions) (runtime.Object, error) {
-				return lbController.client.Get().
+				return lbController.client.Client.Get().
 					Resource("nodes").
 					FieldsSelectorParam(fields.Everything()).
 					Do().
 					Get()
 			},
 			WatchFunc: func(options api.ListOptions) (watch.Interface, error) {
-				return lbController.client.Get().
+				return lbController.client.Client.Get().
 					Prefix("watch").
 					Resource("nodes").
 					FieldsSelectorParam(fields.Everything()).
@@ -245,8 +245,8 @@ func (lbController *LoadBalancerController) syncConfigMap(key string) {
 		}
 
 		bindPort, _ := strconv.Atoi(configMapData["bind-port"])
-		targetServicePort, _ := strconv.Atoi(configMapData["target-port"])
-		servicePort, err := getServicePort(serviceObj, targetServicePort)
+		targetPort := configMapData["target-port-name"]
+		servicePort, err := getServicePort(serviceObj, targetPort)
 		if err != nil {
 			glog.Errorf("Error while getting the service port %v", err)
 			return
@@ -261,7 +261,7 @@ func (lbController *LoadBalancerController) syncConfigMap(key string) {
 			NodePort:          int(servicePort.NodePort),
 			Nodes:             nodes,
 			BindPort:          bindPort,
-			TargetPort:        targetServicePort,
+			TargetPort:        int(servicePort.Port),
 		}
 		go lbController.backendController.Create(name, backendConfig)
 	}
@@ -287,13 +287,21 @@ func (lbController *LoadBalancerController) getServiceObject(namespace string, s
 
 }
 
-func getServicePort(service *api.Service, targetPort int) (*api.ServicePort, error) {
+// Get the port service based on the name. If no name is given, return the first port found
+func getServicePort(service *api.Service, portName string) (*api.ServicePort, error) {
+	if len(service.Spec.Ports) == 0 {
+		return nil, fmt.Errorf("Could not find any port from service %v.", service.Name)
+	}
+
+	if portName == "" {
+		return &service.Spec.Ports[0], nil
+	}
 	for _, p := range service.Spec.Ports {
-		if int(p.Port) == targetPort {
+		if p.Name == portName {
 			return &p, nil
 		}
 	}
-	return nil, fmt.Errorf("Could not find matching port %v from service %v.", targetPort, service.Name)
+	return nil, fmt.Errorf("Could not find matching port %v from service %v.", portName, service.Name)
 }
 
 func nodeReady(node api.Node) bool {
@@ -333,21 +341,22 @@ func (lbController *LoadBalancerController) getLBConfigMapNodePortMap() map[stri
 	for _, obj := range configmaps {
 		cm := obj.(*api.ConfigMap)
 		cmData := cm.Data
+		namespace := cmData["namespace"]
 		serviceName := cmData["target-service-name"]
-		serviceObj := lbController.getServiceObject(cm.Namespace, serviceName)
+		serviceObj := lbController.getServiceObject(namespace, serviceName)
 		// Check if the service exists
 		if serviceObj == nil {
 			continue
 		}
 
-		targetServicePort, _ := strconv.Atoi(cmData["target-port"])
-		servicePort, err := getServicePort(serviceObj, targetServicePort)
+		targetPort, _ := cmData["target-port-name"]
+		servicePort, err := getServicePort(serviceObj, targetPort)
 		if err != nil {
 			glog.Errorf("Error while getting the service port %v", err)
 			continue
 		}
 
-		configMapNodePortMap[cm.Namespace+"-"+cm.Name] = int(servicePort.NodePort)
+		configMapNodePortMap[namespace+"-"+cm.Name] = int(servicePort.NodePort)
 	}
 	return configMapNodePortMap
 }
