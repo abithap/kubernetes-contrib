@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"os"
 	"time"
 
 	"github.com/golang/glog"
@@ -27,6 +28,9 @@ var (
 )
 
 func main() {
+	flags.AddGoFlagSet(flag.CommandLine)
+	flags.Parse(os.Args)
+
 	kubeClient := utils.GetK8Client(utils.ClientConfig{
 		InCluster: *inCluster,
 		Namespace: *watchNamespace,
