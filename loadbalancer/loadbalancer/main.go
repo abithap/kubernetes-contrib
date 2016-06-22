@@ -10,8 +10,9 @@ import (
 	"k8s.io/contrib/loadbalancer/loadbalancer/backend"
 	_ "k8s.io/contrib/loadbalancer/loadbalancer/backend/backends"
 	"k8s.io/contrib/loadbalancer/loadbalancer/controllers"
-	"k8s.io/contrib/loadbalancer/loadbalancer/utils"
 	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/client/unversioned"
+	"k8s.io/kubernetes/pkg/kubectl/cmd/util"
 )
 
 var (
@@ -31,18 +32,31 @@ func main() {
 	flags.AddGoFlagSet(flag.CommandLine)
 	flags.Parse(os.Args)
 
-	kubeClient := utils.GetK8Client(utils.ClientConfig{
-		InCluster: *inCluster,
-		Namespace: *watchNamespace,
-		Flags:     flags,
-	})
+	clientConfig := util.DefaultClientConfig(flags)
 
-	backendController, err := backend.CreateBackendController(map[string]string{
+	var kubeClient *unversioned.Client
+
+	var err error
+	if *inCluster {
+		kubeClient, err = unversioned.NewInCluster()
+	} else {
+		config, connErr := clientConfig.ClientConfig()
+		if connErr != nil {
+			glog.Fatalf("error connecting to the client: %v", err)
+		}
+		kubeClient, err = unversioned.New(config)
+	}
+
+	if err != nil {
+		glog.Fatalf("failed to create client: %v", err)
+	}
+
+	backendController, err := backend.CreateBackendController(kubeClient, *watchNamespace, map[string]string{
 		"BACKEND": *backendName,
 	})
 	if err != nil {
 		glog.Fatalf("Could not create a backend controller for %v", *backendName)
 	}
-	loadBalancerController, _ := controllers.NewLoadBalancerController(kubeClient, 30*time.Second, backendController)
+	loadBalancerController, _ := controllers.NewLoadBalancerController(kubeClient, 30*time.Second, *watchNamespace, backendController)
 	loadBalancerController.Run()
 }

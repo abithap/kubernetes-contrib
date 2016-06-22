@@ -3,7 +3,7 @@ kind: ConfigMap
 metadata:
     name: daemon-configmap
     labels:
-        loadbalancer: configmap
+        loadbalancer: daemon
 data:
   coffee.bind-ip: 10.0.0.60
   coffee.bind-port: "80"
