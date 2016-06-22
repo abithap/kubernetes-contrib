@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/golang/glog"
 	"github.com/rackspace/gophercloud"
@@ -423,7 +424,7 @@ func (lbaas *LBaaSController) getMemberIDFromIP(poolID string, ip string) (strin
 
 func (lbaas *LBaaSController) waitLoadbalancerReady(lbID string) {
 	// Wait for load balancer resource to be ACTIVE state
-	err := wait.PollImmediate(2, 300, func() (done bool, err error) {
+	err := wait.PollImmediate(2*time.Second, 5*time.Minute, func() (done bool, err error) {
 		lb, err := loadbalancers.Get(lbaas.network, lbID).Extract()
 		if err != nil {
 			return true, err
