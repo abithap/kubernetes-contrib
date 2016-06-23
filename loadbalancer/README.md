@@ -78,11 +78,6 @@ the high availability loadbalancing via the use of VIPs. The loadbalance control
   $ kubectl create -f example/ingress-loadbalancer-rc.yaml
   ```
 
-1. Create the loadbalancer daemon resource.
-  ```
-  $ kubectl create -f example/loadbalancer-daemon.yaml
-  ```
-
 1. The loadbalancer daemon pod will only start in nodes that are labeled `type: loadbalancer`. Label the nodes you want the daemon to run on
   ```
   $ kubectl label node my-node1 type=loadbalancer
@@ -107,7 +102,6 @@ data:
   bind-ip: "10.0.0.10"
   bind-port: "80"
   namespace: default
-  target-port: "80"
   target-service-name: coffee-svc
 kind: ConfigMap
 metadata:

@@ -24,8 +24,8 @@ var (
 	watchNamespace = flag.String("watch-namespace", api.NamespaceAll,
 		`Namespace to watch for Configmap/Services/Endpoints. By default the controller
 		watches acrosss all namespaces`)
-	backendName = flags.String("backend", "openstack-lbaasv2",
-		`Backend to use. Default is openstack-lbaasv2.`)
+	backendName = flags.String("backend", "loadbalancer-daemon",
+		`Backend to use. Default is loadbalancer-daemon.`)
 )
 
 func main() {
