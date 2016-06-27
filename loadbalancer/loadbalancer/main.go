@@ -26,6 +26,10 @@ var (
 		watches acrosss all namespaces`)
 	backendName = flags.String("backend", "loadbalancer-daemon",
 		`Backend to use. Default is loadbalancer-daemon.`)
+
+	// Values to verify the configmap object is a loadbalancer config
+	configLabelKey   = "app"
+	configLabelValue = "loadbalancer"
 )
 
 func main() {
@@ -53,10 +57,10 @@ func main() {
 
 	backendController, err := backend.CreateBackendController(kubeClient, *watchNamespace, map[string]string{
 		"BACKEND": *backendName,
-	})
+	}, configLabelKey, configLabelValue)
 	if err != nil {
 		glog.Fatalf("Could not create a backend controller for %v", *backendName)
 	}
-	loadBalancerController, _ := controllers.NewLoadBalancerController(kubeClient, 30*time.Second, *watchNamespace, backendController)
+	loadBalancerController, _ := controllers.NewLoadBalancerController(kubeClient, 30*time.Second, *watchNamespace, backendController, configLabelKey, configLabelValue)
 	loadBalancerController.Run()
 }

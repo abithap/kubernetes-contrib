@@ -29,7 +29,7 @@ func init() {
 }
 
 // NewLoadbalancerDaemonController creates a loadbalancer-daemon controller
-func NewLoadbalancerDaemonController(kubeClient *unversioned.Client, watchNamespace string, conf map[string]string) (backend.BackendController, error) {
+func NewLoadbalancerDaemonController(kubeClient *unversioned.Client, watchNamespace string, conf map[string]string, configLabelKey, configLabelValue string) (backend.BackendController, error) {
 	cmName := os.Getenv("LOADBALANCER_CONFIGMAP")
 	if cmName == "" {
 		cmName = defaultConfigMapName

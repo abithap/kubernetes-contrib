@@ -16,11 +16,9 @@ import (
 	"github.com/rackspace/gophercloud/openstack/networking/v2/extensions/lbaas_v2/pools"
 	"github.com/rackspace/gophercloud/pagination"
 	"k8s.io/contrib/loadbalancer/loadbalancer/backend"
-	"k8s.io/contrib/loadbalancer/loadbalancer/controllers"
 	"k8s.io/contrib/loadbalancer/loadbalancer/utils"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/client/unversioned"
-	"k8s.io/kubernetes/pkg/labels"
 	"k8s.io/kubernetes/pkg/util/wait"
 )
 
@@ -33,11 +31,13 @@ const (
 
 // LBaaSController Controller to manage LBaaS resources
 type LBaaSController struct {
-	kubeClient     *unversioned.Client
-	watchNamespace string
-	compute        *gophercloud.ServiceClient
-	network        *gophercloud.ServiceClient
-	subnetID       string
+	kubeClient          *unversioned.Client
+	watchNamespace      string
+	configMapLabelKey   string
+	configMapLabelValue string
+	compute             *gophercloud.ServiceClient
+	network             *gophercloud.ServiceClient
+	subnetID            string
 }
 
 func init() {
@@ -45,7 +45,7 @@ func init() {
 }
 
 // NewLBaaSController creates a LBaaS controller
-func NewLBaaSController(kubeClient *unversioned.Client, watchNamespace string, conf map[string]string) (backend.BackendController, error) {
+func NewLBaaSController(kubeClient *unversioned.Client, watchNamespace string, conf map[string]string, configLabelKey, configLabelValue string) (backend.BackendController, error) {
 	authOptions := gophercloud.AuthOptions{
 		IdentityEndpoint: os.Getenv("OS_AUTH_URL"),
 		Username:         os.Getenv("OS_USERNAME"),
@@ -75,11 +75,13 @@ func NewLBaaSController(kubeClient *unversioned.Client, watchNamespace string, c
 	}
 
 	lbaasControl := LBaaSController{
-		kubeClient:     kubeClient,
-		watchNamespace: watchNamespace,
-		compute:        compute,
-		network:        network,
-		subnetID:       os.Getenv("OS_SUBNET_ID"),
+		kubeClient:          kubeClient,
+		watchNamespace:      watchNamespace,
+		configMapLabelKey:   configLabelKey,
+		configMapLabelValue: configLabelValue,
+		compute:             compute,
+		network:             network,
+		subnetID:            os.Getenv("OS_SUBNET_ID"),
 	}
 	return &lbaasControl, nil
 }
@@ -295,7 +297,7 @@ func (lbaas *LBaaSController) HandleNodeCreate(node *api.Node) {
 		glog.Errorf("Error getting IP for node %v", node.Name)
 		return
 	}
-	configMapNodePortMap := lbaas.getLBConfigMapNodePortMap()
+	configMapNodePortMap := utils.GetLBConfigMapNodePortMap(lbaas.kubeClient, lbaas.watchNamespace, lbaas.configMapLabelKey, lbaas.configMapLabelValue)
 
 	for configmapName, nodePort := range configMapNodePortMap {
 		poolName := getResourceName(POOL, configmapName)
@@ -320,7 +322,7 @@ func (lbaas *LBaaSController) HandleNodeDelete(node *api.Node) {
 		glog.Errorf("Error getting IP for node %v", node.Name)
 		return
 	}
-	configMapNodePortMap := lbaas.getLBConfigMapNodePortMap()
+	configMapNodePortMap := utils.GetLBConfigMapNodePortMap(lbaas.kubeClient, lbaas.watchNamespace, lbaas.configMapLabelKey, lbaas.configMapLabelValue)
 
 	for configmapName := range configMapNodePortMap {
 		poolName := getResourceName(POOL, configmapName)
@@ -356,7 +358,7 @@ func (lbaas *LBaaSController) HandleNodeUpdate(oldNode *api.Node, curNode *api.N
 		return
 	}
 
-	configMapNodePortMap := lbaas.getLBConfigMapNodePortMap()
+	configMapNodePortMap := utils.GetLBConfigMapNodePortMap(lbaas.kubeClient, lbaas.watchNamespace, lbaas.configMapLabelKey, lbaas.configMapLabelValue)
 
 	for configmapName, nodePort := range configMapNodePortMap {
 		poolName := getResourceName(POOL, configmapName)
@@ -495,7 +497,7 @@ func (lbaas *LBaaSController) deleteLBaaSResource(lbID string, resourceType stri
 		// Wait for load balancer resource to be ACTIVE state
 		lbaas.waitLoadbalancerReady(lbID)
 	}
-	glog.Errorf("%v %v Deleted", resourceType, resourceID)
+	glog.Infof("%v %v Deleted", resourceType, resourceID)
 }
 
 // getReadyNodeNames returns names of schedulable, ready nodes from the node lister.
@@ -518,35 +520,4 @@ func (lbaas *LBaaSController) getReadyNodeIPs() ([]string, error) {
 		nodeIPs = append(nodeIPs, *ip)
 	}
 	return nodeIPs, nil
-}
-
-func (lbaas *LBaaSController) getLBConfigMapNodePortMap() map[string]int {
-	configMapNodePortMap := make(map[string]int)
-	labelSelector := labels.Set{controllers.ConfigLabelKey: controllers.ConfigLabelValue}.AsSelector()
-	opt := api.ListOptions{LabelSelector: labelSelector}
-	configmaps, err := lbaas.kubeClient.ConfigMaps(lbaas.watchNamespace).List(opt)
-	if err != nil {
-		glog.Errorf("Error while getting the configmap list %v", err)
-		return configMapNodePortMap
-	}
-	for _, cm := range configmaps.Items {
-		cmData := cm.Data
-		namespace := cmData["namespace"]
-		serviceName := cmData["target-service-name"]
-		serviceObj, err := lbaas.kubeClient.Services(namespace).Get(serviceName)
-		if err != nil {
-			glog.Errorf("Error getting service object %v/%v. %v", namespace, serviceName, err)
-			continue
-		}
-
-		targetPort, _ := cmData["target-port-name"]
-		servicePort, err := utils.GetServicePort(serviceObj, targetPort)
-		if err != nil {
-			glog.Errorf("Error while getting the service port %v", err)
-			continue
-		}
-
-		configMapNodePortMap[namespace+"-"+cm.Name] = int(servicePort.NodePort)
-	}
-	return configMapNodePortMap
 }
