@@ -23,7 +23,7 @@ type BackendController interface {
 }
 
 // BackendControllerFactory Factory for Backend controllers
-type BackendControllerFactory func(kubeClient *unversioned.Client, watchNamespace string, conf map[string]string) (BackendController, error)
+type BackendControllerFactory func(kubeClient *unversioned.Client, watchNamespace string, conf map[string]string, configLabelKey, configLabelValue string) (BackendController, error)
 
 var backendsMutex sync.Mutex
 var backendControllerFactories = make(map[string]BackendControllerFactory)
@@ -44,7 +44,7 @@ func Register(name string, factory BackendControllerFactory) {
 }
 
 // CreateBackendController creates a backend controller factory for a specific backend
-func CreateBackendController(kubeClient *unversioned.Client, watchNamespace string, conf map[string]string) (BackendController, error) {
+func CreateBackendController(kubeClient *unversioned.Client, watchNamespace string, conf map[string]string, configLabelKey, configLabelValue string) (BackendController, error) {
 	backendsMutex.Lock()
 	defer backendsMutex.Unlock()
 
@@ -63,5 +63,5 @@ func CreateBackendController(kubeClient *unversioned.Client, watchNamespace stri
 	}
 
 	// Run the factory with the configuration.
-	return engineFactory(kubeClient, watchNamespace, conf)
+	return engineFactory(kubeClient, watchNamespace, conf, configLabelKey, configLabelValue)
 }

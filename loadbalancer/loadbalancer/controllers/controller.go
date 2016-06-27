@@ -51,16 +51,10 @@ type StoreToConfigMapLister struct {
 	cache.Store
 }
 
-// Values to verify the configmap object is a loadbalancer config
-const (
-	ConfigLabelKey   = "app"
-	ConfigLabelValue = "loadbalancer"
-)
-
 var keyFunc = framework.DeletionHandlingMetaNamespaceKeyFunc
 
 // NewLoadBalancerController creates a controller
-func NewLoadBalancerController(kubeClient *client.Client, resyncPeriod time.Duration, namespace string, controller backend.BackendController) (*LoadBalancerController, error) {
+func NewLoadBalancerController(kubeClient *client.Client, resyncPeriod time.Duration, namespace string, controller backend.BackendController, configMapLabelKey, configMapLabelValue string) (*LoadBalancerController, error) {
 	lbController := LoadBalancerController{
 		client:            kubeClient,
 		stopCh:            make(chan struct{}),
@@ -85,8 +79,8 @@ func NewLoadBalancerController(kubeClient *client.Client, resyncPeriod time.Dura
 	}
 	lbController.configMapLister.Store, lbController.configMapController = framework.NewInformer(
 		&cache.ListWatch{
-			ListFunc:  configMapListFunc(kubeClient, namespace),
-			WatchFunc: configMapWatchFunc(kubeClient, namespace),
+			ListFunc:  configMapListFunc(kubeClient, namespace, configMapLabelKey, configMapLabelValue),
+			WatchFunc: configMapWatchFunc(kubeClient, namespace, configMapLabelKey, configMapLabelValue),
 		},
 		&api.ConfigMap{}, resyncPeriod, configMapHandlers)
 
@@ -154,16 +148,16 @@ func (lbController *LoadBalancerController) Run() {
 	<-lbController.stopCh
 }
 
-func configMapListFunc(c *client.Client, ns string) func(api.ListOptions) (runtime.Object, error) {
+func configMapListFunc(c *client.Client, ns string, labelKey, labelValue string) func(api.ListOptions) (runtime.Object, error) {
 	return func(opts api.ListOptions) (runtime.Object, error) {
-		opts.LabelSelector = labels.Set{ConfigLabelKey: ConfigLabelValue}.AsSelector()
+		opts.LabelSelector = labels.Set{labelKey: labelValue}.AsSelector()
 		return c.ConfigMaps(ns).List(opts)
 	}
 }
 
-func configMapWatchFunc(c *client.Client, ns string) func(options api.ListOptions) (watch.Interface, error) {
+func configMapWatchFunc(c *client.Client, ns string, labelKey, labelValue string) func(options api.ListOptions) (watch.Interface, error) {
 	return func(options api.ListOptions) (watch.Interface, error) {
-		options.LabelSelector = labels.Set{ConfigLabelKey: ConfigLabelValue}.AsSelector()
+		options.LabelSelector = labels.Set{labelKey: labelValue}.AsSelector()
 		return c.ConfigMaps(ns).Watch(options)
 	}
 }

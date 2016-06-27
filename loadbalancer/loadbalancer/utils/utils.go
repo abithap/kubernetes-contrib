@@ -6,7 +6,11 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/golang/glog"
+
 	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/client/unversioned"
+	"k8s.io/kubernetes/pkg/labels"
 	"k8s.io/kubernetes/pkg/util/sets"
 )
 
@@ -152,4 +156,36 @@ func NodeReady(node api.Node) bool {
 		}
 	}
 	return false
+}
+
+// GetLBConfigMapNodePortMap fetches all the configmaps and returns a map of loadbalancer configmaps to node port
+func GetLBConfigMapNodePortMap(client *unversioned.Client, configMapNamespace string, configMapLabelKey, configMapLabelValue string) map[string]int {
+	configMapNodePortMap := make(map[string]int)
+	labelSelector := labels.Set{configMapLabelKey: configMapLabelValue}.AsSelector()
+	opt := api.ListOptions{LabelSelector: labelSelector}
+	configmaps, err := client.ConfigMaps(configMapNamespace).List(opt)
+	if err != nil {
+		glog.Errorf("Error while getting the configmap list %v", err)
+		return configMapNodePortMap
+	}
+	for _, cm := range configmaps.Items {
+		cmData := cm.Data
+		namespace := cmData["namespace"]
+		serviceName := cmData["target-service-name"]
+		serviceObj, err := client.Services(namespace).Get(serviceName)
+		if err != nil {
+			glog.Errorf("Error getting service object %v/%v. %v", namespace, serviceName, err)
+			continue
+		}
+
+		targetPort, _ := cmData["target-port-name"]
+		servicePort, err := GetServicePort(serviceObj, targetPort)
+		if err != nil {
+			glog.Errorf("Error while getting the service port %v", err)
+			continue
+		}
+
+		configMapNodePortMap[namespace+"-"+cm.Name] = int(servicePort.NodePort)
+	}
+	return configMapNodePortMap
 }
