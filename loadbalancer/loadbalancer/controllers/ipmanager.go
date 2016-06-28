@@ -20,22 +20,29 @@ import (
 	"bytes"
 	"errors"
 	"net"
+	"sync"
 
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/client/unversioned"
+	"k8s.io/kubernetes/pkg/labels"
+)
+
+const (
+	ipConfigMapName = "ip-manager-configmap"
 )
 
 var ErrIPRangeExhausted = errors.New("Exhausted given Virtual IP range")
 
-const ipConfigMapName = "ip-manager-configmap"
+var ipConfigMutex sync.Mutex
+var empty struct{}
 
 type IPManager struct {
 	configMapName string
-	ipRange       ipRange
 	namespace     string
+	userNamespace string
+	ipRange       ipRange
 	kubeClient    *unversioned.Client
-	ipStatusMap   map[string]bool
 }
 
 type ipRange struct {
@@ -43,7 +50,7 @@ type ipRange struct {
 	endIP   string
 }
 
-func NewIPManager(startIP string, endIP string, namespace string, kubeClient *unversioned.Client) *IPManager {
+func NewIPManager(kubeClient *unversioned.Client, startIP, endIP, ipCmNamespace, userNamespace, configLabelKey, configLabelValue string) *IPManager {
 
 	ipRange := ipRange{
 		startIP: startIP,
@@ -51,14 +58,68 @@ func NewIPManager(startIP string, endIP string, namespace string, kubeClient *un
 	}
 	ipManager := IPManager{
 		configMapName: ipConfigMapName,
+		namespace:     ipCmNamespace,
+		userNamespace: userNamespace,
 		ipRange:       ipRange,
-		namespace:     namespace,
 		kubeClient:    kubeClient,
+	}
+
+	//sync deleted configmaps with ip configmap
+	ipCm := ipManager.getConfigMap()
+	ipCmData := ipCm.Data
+	if len(ipCmData) != 0 {
+		var opts api.ListOptions
+		opts.LabelSelector = labels.Set{configLabelKey: configLabelValue}.AsSelector()
+		cms, err := kubeClient.ConfigMaps(userNamespace).List(opts)
+		if err != nil {
+			glog.Infof("Error syncing ipconfigmap %v", err)
+		}
+
+		cmList := cms.Items
+		currentCms := make(map[string]struct{})
+		for _, cm := range cmList {
+			name := cm.Namespace + "-" + cm.Name
+			currentCms[name] = empty
+		}
+
+		//update ipconfigmap if user configmap got deleted between reloads
+		for k, v := range ipCmData {
+			if _, ok := currentCms[v]; !ok {
+				delete(ipCmData, k)
+			}
+		}
+
+		_, err = kubeClient.ConfigMaps(ipCmNamespace).Update(ipCm)
+		if err != nil {
+			glog.Infof("Error updating ip configmap %v: %v", ipCm.Name, err)
+			return nil
+		}
 	}
 	return &ipManager
 }
+func (ipManager *IPManager) checkConfigMap(cmName string) (bool, string) {
+	cm := ipManager.getConfigMap()
+	cmData := cm.Data
+	for k, v := range cmData {
+		if v == cmName {
+			return true, k
+		}
+	}
+	return false, ""
+}
 
 func (ipManager *IPManager) GenerateVirtualIP(configMap *api.ConfigMap) (string, error) {
+
+	// Block execution until the ip config map gets updated with the new virtual IP
+	ipConfigMutex.Lock()
+	defer ipConfigMutex.Unlock()
+
+	//check if the user configmap entry already exists in ip configmap
+	cmName := configMap.Namespace + "-" + configMap.Name
+	if ok, vip := ipManager.checkConfigMap(cmName); ok {
+		return vip, nil
+	}
+
 	virtualIP, err := ipManager.getFreeVirtualIP()
 	if err != nil {
 		return "", err
