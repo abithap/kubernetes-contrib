@@ -15,6 +15,10 @@ spec:
     spec:
       containers:
       - env:
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
         - name: F5_HOST
           value: 10.0.0.1
         - name: F5_USER
@@ -24,6 +28,10 @@ spec:
             secretKeyRef:
               name: f5-password
               key: password
+        - name: VIP_ALLOCATION_START
+          value: "10.0.0.1"
+        - name: VIP_ALLOCATION_END
+          value: "10.0.0.55"
         image: kokhang/ingress-loadbalancer:0.1
         imagePullPolicy: Always
         name: ingress-loadbalancer

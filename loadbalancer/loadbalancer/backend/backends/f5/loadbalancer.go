@@ -1,6 +1,8 @@
 package f5
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -8,6 +10,7 @@ import (
 	"github.com/golang/glog"
 	"github.com/scottdware/go-bigip"
 	"k8s.io/contrib/loadbalancer/loadbalancer/backend"
+	"k8s.io/contrib/loadbalancer/loadbalancer/controllers"
 	"k8s.io/contrib/loadbalancer/loadbalancer/utils"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/client/unversioned"
@@ -17,7 +20,7 @@ const (
 	VIRTUAL_SERVER   = "virtualserver"
 	POOL             = "pool"
 	MONITOR          = "monitor"
-	MONITOR_PROTOCOL = "TCP Half Open"
+	MONITOR_PROTOCOL = "tcp"
 )
 
 // F5Controller Controller to communicate with F5
@@ -27,6 +30,7 @@ type F5Controller struct {
 	watchNamespace      string
 	configMapLabelKey   string
 	configMapLabelValue string
+	ipManager           *controllers.IPManager
 }
 
 func init() {
@@ -41,12 +45,19 @@ func NewF5Controller(kubeClient *unversioned.Client, watchNamespace string, conf
 	if ns == "" {
 		ns = api.NamespaceDefault
 	}
+
+	ipMgr := controllers.NewIPManager(kubeClient, ns, watchNamespace, configLabelKey, configLabelValue)
+	if ipMgr == nil {
+		glog.Fatalln("NewIPManager returned nil")
+	}
+
 	lbControl := F5Controller{
 		f5:                  f5Session,
 		kubeClient:          kubeClient,
 		watchNamespace:      watchNamespace,
 		configMapLabelKey:   configLabelKey,
 		configMapLabelValue: configLabelValue,
+		ipManager:           ipMgr,
 	}
 	return &lbControl, nil
 }
@@ -62,9 +73,12 @@ func (ctr *F5Controller) GetBindIP(name string) string {
 	virtualServer, err := ctr.f5.GetVirtualServer(virtualServerName)
 	if err != nil {
 		glog.Errorf("Error getting virtual server %v. %v", virtualServerName, err)
-		return "UNKNOWN"
+		return ""
 	}
-	return virtualServer.Destination
+	if virtualServer == nil {
+		return ""
+	}
+	return formatVirtualServerDestination(virtualServer.Destination)
 }
 
 // HandleConfigMapCreate creates a new F5 pool, nodes, monitor and virtual server to provide loadbalancing to the app defined in the configmap
@@ -89,10 +103,26 @@ func (ctr *F5Controller) HandleConfigMapCreate(configMap *api.ConfigMap) {
 		return
 	}
 
-	poolName := getResourceName(POOL, name)
-	err = ctr.f5.CreatePool(poolName)
+	//generate Virtual IP
+	bindIP, err := ctr.ipManager.GenerateVirtualIP(configMap)
 	if err != nil {
-		glog.Errorf("Could not create pool %v. %v", poolName, err)
+		glog.Errorf("Error generating Virtual IP - %v", err)
+		return
+	}
+
+	poolName := getResourceName(POOL, name)
+	pool, err := ctr.f5.GetPool(poolName)
+	if err != nil {
+		glog.Errorf("Error getting pool %v. %v", poolName, err)
+		return
+	}
+	if pool == nil {
+		err = ctr.f5.CreatePool(poolName)
+		if err != nil {
+			glog.Errorf("Error creating pool %v. %v", poolName, err)
+			return
+		}
+		glog.Infof("Pool %v created.", poolName)
 	}
 
 	// Add nodes to pool
@@ -108,47 +138,66 @@ func (ctr *F5Controller) HandleConfigMapCreate(configMap *api.ConfigMap) {
 				glog.Errorf("Error getting Node %v. %v", n.Name, err)
 				continue
 			}
-			if node == nil {
-				ip, err := utils.GetNodeHostIP(n)
-				if err != nil {
-					glog.Errorf("Error getting IP for node %v. %v", n.Name, err)
-					continue
-				}
-				err = ctr.f5.CreateNode(n.Name, *ip)
-				if err != nil {
-					glog.Errorf("Error creating node %v and IP %v. %v", n.Name, *ip, err)
-					continue
-				}
-			}
 			member := node.Name + ":" + strconv.Itoa(int(servicePort.NodePort))
-			err = ctr.f5.AddPoolMember(poolName, member)
-			if err != nil {
-				glog.Errorf("Error adding member %v to pool %v. %v", n.Name, poolName, err)
-			}
+			ctr.f5.AddPoolMember(poolName, member)
+			// Not checking for error since there is a F5 bug that returns error even if the request was successful
+			// https://devcentral.f5.com/questions/icontrol-rest-404-despite-success-when-adding-pool-member
+			glog.Infof("Member %v added to pool %v.", member, poolName)
 		}
 	}
 
 	monitorName := getResourceName(MONITOR, name)
-	err = ctr.f5.CreateMonitor(monitorName, MONITOR_PROTOCOL, 5, 16, "", "")
+	monExist, err := ctr.monitorExist(monitorName)
 	if err != nil {
-		glog.Errorf("Could not create monitor %v. %v", monitorName, err)
+		glog.Errorf("Error accessing monitors. %v", err)
 		defer ctr.deleteF5Resource(poolName, POOL)
+		return
 	}
+	if !monExist {
+		err = ctr.f5.CreateMonitor(monitorName, MONITOR_PROTOCOL, 5, 16, "", "")
+		if err != nil {
+			glog.Errorf("Could not create monitor %v. %v", monitorName, err)
+			defer ctr.deleteF5Resource(poolName, POOL)
+			return
+		}
+		glog.Infof("Monitor %v created.", monitorName)
+	}
+
 	err = ctr.f5.AddMonitorToPool(monitorName, poolName)
 	if err != nil {
 		glog.Errorf("Could not add monitor %v to pool %v. %v", monitorName, poolName, err)
-		defer ctr.deleteF5Resource(poolName, POOL)
 		defer ctr.deleteF5Resource(monitorName, MONITOR)
+		defer ctr.deleteF5Resource(poolName, POOL)
+		return
 	}
+	glog.Infof("Monitor %v added to pool %v.", monitorName, poolName)
 
 	virtualServerName := getResourceName(VIRTUAL_SERVER, name)
-	bindIP := config["bind-ip"]
-	bindPort, _ := strconv.Atoi(config["bind-port"])
-	err = ctr.f5.CreateVirtualServer(virtualServerName, bindIP, "32", poolName, bindPort)
+	vs, err := ctr.f5.GetVirtualServer(virtualServerName)
 	if err != nil {
-		glog.Errorf("Could not create virtual server %v for IP %v in pool %v. %v", virtualServerName, bindIP, poolName, err)
-		defer ctr.deleteF5Resource(poolName, POOL)
-		defer ctr.deleteF5Resource(monitorName, MONITOR)
+		glog.Errorf("Error getting virtual server %v. %v", virtualServerName, err)
+		return
+	}
+	bindPort, _ := strconv.Atoi(config["bind-port"])
+	if vs == nil {
+		err = ctr.f5.CreateVirtualServer(virtualServerName, bindIP, "32", poolName, bindPort)
+		if err != nil {
+			glog.Errorf("Could not create virtual server %v for IP %v in pool %v. %v", virtualServerName, bindIP, poolName, err)
+			defer ctr.deleteF5Resource(monitorName, MONITOR)
+			defer ctr.deleteF5Resource(poolName, POOL)
+			return
+		}
+		glog.Infof("Virtual server %v created.", virtualServerName)
+	} else {
+		destination := fmt.Sprintf("%s:%d", bindIP, bindPort)
+		if destination != formatVirtualServerDestination(vs.Destination) {
+			vs.Destination = destination
+			err = ctr.f5.ModifyVirtualServer(virtualServerName, vs)
+			if err != nil {
+				glog.Errorf("Error updating virtual server %v destination %v: %v", virtualServerName, destination, err)
+			}
+			glog.Infof("Virtual server %v has updated its destination to %v.", virtualServerName, destination)
+		}
 	}
 }
 
@@ -157,11 +206,16 @@ func (ctr *F5Controller) HandleConfigMapDelete(name string) {
 	virtualServerName := getResourceName(VIRTUAL_SERVER, name)
 	ctr.deleteF5Resource(virtualServerName, VIRTUAL_SERVER)
 
+	poolName := getResourceName(POOL, name)
+	ctr.deleteF5Resource(poolName, POOL)
+
 	monitorName := getResourceName(MONITOR, name)
 	ctr.deleteF5Resource(monitorName, MONITOR)
 
-	poolName := getResourceName(POOL, name)
-	ctr.deleteF5Resource(poolName, POOL)
+	err := ctr.ipManager.DeleteVirtualIP(name)
+	if err != nil {
+		glog.Errorf("Error deleting Virtual IP - %v", err)
+	}
 }
 
 // HandleNodeCreate creates new member for this node in every pool
@@ -171,16 +225,25 @@ func (ctr *F5Controller) HandleNodeCreate(node *api.Node) {
 	if err != nil {
 		glog.Errorf("Error getting Node %v. %v", node.Name, err)
 	}
+	ip, err := utils.GetNodeHostIP(*node)
+	if err != nil {
+		glog.Errorf("Error getting IP for node %v. %v", node.Name, err)
+		return
+	}
 	if n == nil {
-		ip, err := utils.GetNodeHostIP(*node)
-		if err != nil {
-			glog.Errorf("Error getting IP for node %v. %v", node.Name, err)
-			return
-		}
 		ctr.f5.CreateNode(node.Name, *ip)
 		if err != nil {
 			glog.Errorf("Error creating node %v and IP %v. %v", n.Name, *ip, err)
 			return
+		}
+	} else {
+		if n.Address != *ip {
+			n.Address = *ip
+			err := ctr.f5.ModifyNode(n.Name, n)
+			if err != nil {
+				glog.Errorf("Error updating node %v and IP %v. %v", n.Name, *ip, err)
+			}
+			glog.Infof("Node %v has updated its IP to %v.", n.Name, *ip)
 		}
 	}
 
@@ -189,9 +252,6 @@ func (ctr *F5Controller) HandleNodeCreate(node *api.Node) {
 		poolName := getResourceName(POOL, configmapName)
 		member := node.Name + ":" + strconv.Itoa(int(nodePort))
 		err = ctr.f5.AddPoolMember(poolName, member)
-		if err != nil {
-			glog.Errorf("Error adding member %v to pool %v. %v", node.Name, poolName, err)
-		}
 		glog.Infof("Created member %v in pool %v", member, poolName)
 	}
 }
@@ -232,6 +292,39 @@ func (ctr *F5Controller) HandleNodeUpdate(oldNode *api.Node, curNode *api.Node) 
 			ctr.f5.ModifyNode(oldN.Name, oldN)
 		}
 	}
+}
+
+// monitorExist checks whether the monitor exists in F5. The big-ip library does not have support for TCP monitors lookup.
+// Therefore i am making my own.
+func (ctr *F5Controller) monitorExist(name string) (bool, error) {
+	var m bigip.Monitors
+	req := &bigip.APIRequest{
+		Method:      "get",
+		URL:         "ltm/monitor/" + MONITOR_PROTOCOL,
+		ContentType: "application/json",
+	}
+
+	resp, err := ctr.f5.APICall(req)
+	if err != nil {
+		return false, err
+	}
+	err = json.Unmarshal(resp, &m)
+	if err != nil {
+		return false, err
+	}
+
+	for _, mon := range m.Monitors {
+		if mon.Name == name {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func formatVirtualServerDestination(destination string) string {
+	// /Commmon/<ip>::<port> -> <ip>:<port>
+	res := strings.Split(destination, "/")
+	return res[len(res)-1]
 }
 
 func getResourceName(resourceType string, names ...string) string {
