@@ -75,10 +75,27 @@ func NewIPManager(kubeClient *unversioned.Client, ipCmNamespace, userNamespace, 
 		kubeClient:    kubeClient,
 	}
 
-	//sync deleted configmaps with ip configmap
+	// check if VIP has changed between failover
 	ipCm := ipManager.getConfigMap()
 	ipCmData := ipCm.Data
 	if len(ipCmData) != 0 {
+		for k := range ipCmData {
+			if !ipManager.checkInIPRange(k) {
+				delete(ipCmData, k)
+			}
+		}
+	}
+
+	err := ipManager.updateIPConfigMap(ipCm)
+	if err != nil {
+		glog.Errorf("Error updating configmap %v: %v", ipCm.Name, err)
+		return nil
+	}
+
+	// sync deleted configmaps with ip configmap
+	ipMgrCm := ipManager.getConfigMap()
+	ipMgrCmData := ipMgrCm.Data
+	if len(ipMgrCmData) != 0 {
 		var opts api.ListOptions
 		opts.LabelSelector = labels.Set{configLabelKey: configLabelValue}.AsSelector()
 		cms, err := kubeClient.ConfigMaps(userNamespace).List(opts)
@@ -94,20 +111,22 @@ func NewIPManager(kubeClient *unversioned.Client, ipCmNamespace, userNamespace, 
 		}
 
 		//update ipconfigmap if user configmap got deleted between reloads
-		for k, v := range ipCmData {
+		for k, v := range ipMgrCmData {
 			if _, ok := currentCms[v]; !ok {
-				delete(ipCmData, k)
+				delete(ipMgrCmData, k)
 			}
 		}
 
-		_, err = kubeClient.ConfigMaps(ipCmNamespace).Update(ipCm)
+		err = ipManager.updateIPConfigMap(ipMgrCm)
 		if err != nil {
-			glog.Infof("Error updating ip configmap %v: %v", ipCm.Name, err)
+			glog.Infof("Error updating ip configmap %v: %v", ipMgrCm.Name, err)
 			return nil
 		}
 	}
+
 	return &ipManager
 }
+
 func (ipManager *IPManager) checkConfigMap(cmName string) (bool, string) {
 	cm := ipManager.getConfigMap()
 	cmData := cm.Data
@@ -142,7 +161,7 @@ func (ipManager *IPManager) GenerateVirtualIP(configMap *api.ConfigMap) (string,
 	name := configMap.Namespace + "-" + configMap.Name
 	ipConfigMapData[virtualIP] = name
 
-	_, err = ipManager.kubeClient.ConfigMaps(ipManager.namespace).Update(ipConfigMap)
+	err = ipManager.updateIPConfigMap(ipConfigMap)
 	if err != nil {
 		glog.Infof("Error updating ip configmap %v: %v", ipConfigMap.Name, err)
 		return "", err
@@ -163,7 +182,7 @@ func (ipManager *IPManager) DeleteVirtualIP(name string) error {
 		}
 	}
 
-	_, err := ipManager.kubeClient.ConfigMaps(ipManager.namespace).Update(ipConfigMap)
+	err := ipManager.updateIPConfigMap(ipConfigMap)
 	if err != nil {
 		glog.Infof("Error updating ip configmap %v: %v", ipConfigMap.Name, err)
 		return err
@@ -217,4 +236,29 @@ func (ipManager *IPManager) getFreeVirtualIP() (string, error) {
 		}
 	}
 	return "", ErrIPRangeExhausted
+}
+
+// checks if IP is in the given range
+func (ipManager *IPManager) checkInIPRange(ip string) bool {
+	trial := net.ParseIP(ip)
+	startIP := net.ParseIP(ipManager.ipRange.startIP)
+	endIP := net.ParseIP(ipManager.ipRange.endIP)
+
+	if trial.To4() == nil {
+		glog.Infof("%v is not an IPv4 address\n", trial)
+		return false
+	}
+	if bytes.Compare(trial, startIP) >= 0 && bytes.Compare(trial, endIP) <= 0 {
+		return true
+	}
+	return false
+}
+
+// update ip configmap
+func (ipManager *IPManager) updateIPConfigMap(configMap *api.ConfigMap) error {
+	_, err := ipManager.kubeClient.ConfigMaps(ipManager.namespace).Update(configMap)
+	if err != nil {
+		return err
+	}
+	return nil
 }
