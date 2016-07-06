@@ -453,24 +453,24 @@ func (lbaas *LBaaSController) HandleNodeUpdate(oldNode *api.Node, curNode *api.N
 		memberID, err := lbaas.getMemberIDFromIP(poolID, *oldIP)
 		if err != nil {
 			glog.Warningf("Could not get member for pool %v. IP: %v. Creating...", poolName, *oldIP)
-			memberID, err := lbaas.createMemberResource(poolID, *newIP, nodePort)
+			continue
+		} else {
+			// delete the existing pool member with old IP
+			err = pools.DeleteMember(lbaas.network, poolID, memberID).ExtractErr()
 			if err != nil {
-				glog.Errorf("Could not create member for pool %v. IP: %v. Port: %v", poolName, *newIP, nodePort)
+				glog.Errorf("Could not get member for pool %v. memberID: %v", poolName, memberID)
 				continue
 			}
-			glog.Infof("Created member for %v. ID: %v", *newIP, memberID)
-			continue
+			glog.Infof("Deleted member for pool %v with IP: %v. ID: %v", poolName, *oldIP, memberID)
 		}
 
-		// Update member. Change IP
-		res, err := pools.UpdateAssociateMember(lbaas.network, poolID, memberID, pools.MemberUpdateOpts{
-			Address:      *newIP,
-			ProtocolPort: nodePort,
-		}).ExtractMember()
+		// create the pool member again to update with new IP
+		memberID, err = lbaas.createMemberResource(poolID, *newIP, nodePort)
 		if err != nil {
-			glog.Errorf("Could not update member %v. %v", memberID, err)
+			glog.Errorf("Could not create member for pool %v. IP: %v. Port: %v", poolName, *newIP, nodePort)
+			continue
 		}
-		glog.Infof("Updated member %v. Changed IP from %v to %v.", res.ID, *oldIP, *newIP)
+		glog.Infof("Created member for %v. ID: %v", *newIP, memberID)
 	}
 }
 
