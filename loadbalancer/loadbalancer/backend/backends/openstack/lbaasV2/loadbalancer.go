@@ -124,6 +124,80 @@ func (lbaas *LBaaSController) GetBindIP(name string) string {
 	return bindIP
 }
 
+// check if Loadbalancer already exists with the correct resources
+func (lbaas *LBaaSController) checkLoadbalancerExist(cmName string, servicePort *api.ServicePort, listenerBindPort string) (bool, error) {
+	expectedBindPort, _ := strconv.Atoi(listenerBindPort)
+	expectedPoolProtocol := string(servicePort.Protocol)
+	expectedNodePort := servicePort.NodePort
+	expectedLbName := getResourceName(LOADBALANCER, cmName)
+	expectedPoolName := getResourceName(POOL, cmName)
+	expectedListenerName := getResourceName(LISTENER, cmName)
+	opts := loadbalancers.ListOpts{Name: expectedLbName}
+
+	//get all pages and check if the  loadbalancer doesnt exists
+	allPages, err := loadbalancers.List(lbaas.network, opts).AllPages()
+	if err != nil {
+		glog.Errorf("Error getting list of Loadbalancers")
+		return false, err
+	}
+
+	// extract the loadbalancer list
+	loadbalancerList, err := loadbalancers.ExtractLoadbalancers(allPages)
+	if err != nil {
+		return false, err
+	}
+	if len(loadbalancerList) == 0 {
+		glog.Infof("No Load balancer found")
+		return false, nil
+	}
+	if len(loadbalancerList) > 1 {
+		err = fmt.Errorf("More than one loadbalancer with name %v found.", expectedLbName)
+		return false, err
+	}
+
+	lbFound := loadbalancerList[0] // assuming there is only one loadbalancer with this name
+	if lbFound.Name == expectedLbName {
+		// check if loadbalancer listener exists
+		if lbFound.VipSubnetID != lbaas.subnetID {
+			return false, nil
+		}
+		listenerList := lbFound.Listeners
+		if len(listenerList) != 0 {
+			listener, _ := listeners.Get(lbaas.network, listenerList[0].ID).Extract() // assuming there is only one listener
+
+			if listener.Name == expectedListenerName {
+				if listener.ProtocolPort != expectedBindPort {
+					glog.Infof("Listener protocol port %v is different from expected port %v", listener.ProtocolPort, expectedBindPort)
+					return false, nil
+				}
+				// check if loadbalancer listener pool exists
+				poolID := listener.DefaultPoolID
+				if poolID != "" {
+					pool, _ := pools.Get(lbaas.network, poolID).Extract()
+					if pool.Name == expectedPoolName {
+						if pool.Protocol != expectedPoolProtocol {
+							glog.Infof("Pool protocol %v is different from expected protocol %v", pool.Protocol, expectedPoolProtocol)
+							return false, nil
+						}
+					}
+					//check if service hasn't changed by comparing the member nodePort
+					allPages, _ := pools.ListAssociateMembers(lbaas.network, poolID, pools.MemberListOpts{}).AllPages()
+					memberList, _ := pools.ExtractMembers(allPages)
+					poolMember0 := memberList[0]
+					if expectedNodePort != int32(poolMember0.ProtocolPort) {
+						return false, nil
+					}
+					if pool.MonitorID != "" {
+						return true, nil
+					}
+				}
+			}
+		}
+	}
+
+	return false, nil
+}
+
 // HandleConfigMapCreate creates a new lbaas loadbalancer resource
 func (lbaas *LBaaSController) HandleConfigMapCreate(configMap *api.ConfigMap) {
 	name := configMap.Namespace + "-" + configMap.Name
@@ -147,6 +221,15 @@ func (lbaas *LBaaSController) HandleConfigMapCreate(configMap *api.ConfigMap) {
 		return
 	}
 
+	// check if the loadbalancer already exists
+	lbExists, err := lbaas.checkLoadbalancerExist(name, servicePort, config["bind-port"])
+	if err != nil {
+		glog.Errorf("Couldn't check the existence of %v loadbalancer", getResourceName(LOADBALANCER, name))
+	}
+	if lbExists {
+		glog.Infof("Loadbalancer %v already exists", getResourceName(LOADBALANCER, name))
+		return
+	}
 	// Delete current load balancer for this service if it exist
 	lbaas.HandleConfigMapDelete(name)
 
@@ -165,7 +248,7 @@ func (lbaas *LBaaSController) HandleConfigMapCreate(configMap *api.ConfigMap) {
 	// Wait for load balancer resource to be ACTIVE state
 	lbaas.waitLoadbalancerReady(lb.ID)
 
-	// Create a listener resouce for the loadbalancer
+	// Create a listener resource for the loadbalancer
 	listenerName := getResourceName(LISTENER, name)
 	bindPort, _ := strconv.Atoi(config["bind-port"])
 	listener, err := listeners.Create(lbaas.network, listeners.CreateOpts{
@@ -185,7 +268,7 @@ func (lbaas *LBaaSController) HandleConfigMapCreate(configMap *api.ConfigMap) {
 	// Wait for load balancer resource to be ACTIVE state
 	lbaas.waitLoadbalancerReady(lb.ID)
 
-	// Create a pool resouce for the listener
+	// Create a pool resource for the listener
 	poolName := getResourceName(POOL, name)
 	pool, err := pools.Create(lbaas.network, pools.CreateOpts{
 		LBMethod:   pools.LBMethodRoundRobin,
