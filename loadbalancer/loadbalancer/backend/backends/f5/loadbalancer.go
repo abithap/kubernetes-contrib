@@ -110,16 +110,33 @@ func (ctr *F5Controller) HandleConfigMapCreate(configMap *api.ConfigMap) {
 		return
 	}
 
+	monitorName := getResourceName(MONITOR, name)
+	monExist, err := ctr.monitorExist(monitorName)
+	if err != nil {
+		glog.Errorf("Error accessing monitors. %v", err)
+		return
+	}
+	if !monExist {
+		err = ctr.f5.CreateMonitor(monitorName, MONITOR_PROTOCOL, 5, 16, "", "")
+		if err != nil {
+			glog.Errorf("Could not create monitor %v. %v", monitorName, err)
+			return
+		}
+		glog.Infof("Monitor %v created.", monitorName)
+	}
+
 	poolName := getResourceName(POOL, name)
 	pool, err := ctr.f5.GetPool(poolName)
 	if err != nil {
 		glog.Errorf("Error getting pool %v. %v", poolName, err)
+		defer ctr.deleteF5Resource(monitorName, MONITOR)
 		return
 	}
 	if pool == nil {
-		err = ctr.f5.CreatePool(poolName)
+		err = ctr.createPool(poolName, monitorName)
 		if err != nil {
 			glog.Errorf("Error creating pool %v. %v", poolName, err)
+			defer ctr.deleteF5Resource(monitorName, MONITOR)
 			return
 		}
 		glog.Infof("Pool %v created.", poolName)
@@ -129,6 +146,7 @@ func (ctr *F5Controller) HandleConfigMapCreate(configMap *api.ConfigMap) {
 	nodes, err := ctr.kubeClient.Nodes().List(api.ListOptions{})
 	if err != nil {
 		glog.Errorf("Error listing nodes %v", err)
+		defer ctr.deleteF5Resource(monitorName, MONITOR)
 		defer ctr.deleteF5Resource(poolName, POOL)
 	}
 	for _, n := range nodes.Items {
@@ -146,57 +164,33 @@ func (ctr *F5Controller) HandleConfigMapCreate(configMap *api.ConfigMap) {
 		}
 	}
 
-	monitorName := getResourceName(MONITOR, name)
-	monExist, err := ctr.monitorExist(monitorName)
-	if err != nil {
-		glog.Errorf("Error accessing monitors. %v", err)
-		defer ctr.deleteF5Resource(poolName, POOL)
-		return
-	}
-	if !monExist {
-		err = ctr.f5.CreateMonitor(monitorName, MONITOR_PROTOCOL, 5, 16, "", "")
-		if err != nil {
-			glog.Errorf("Could not create monitor %v. %v", monitorName, err)
-			defer ctr.deleteF5Resource(poolName, POOL)
-			return
-		}
-		glog.Infof("Monitor %v created.", monitorName)
-	}
-
-	err = ctr.f5.AddMonitorToPool(monitorName, poolName)
-	if err != nil {
-		glog.Errorf("Could not add monitor %v to pool %v. %v", monitorName, poolName, err)
-		defer ctr.deleteF5Resource(monitorName, MONITOR)
-		defer ctr.deleteF5Resource(poolName, POOL)
-		return
-	}
-	glog.Infof("Monitor %v added to pool %v.", monitorName, poolName)
-
 	virtualServerName := getResourceName(VIRTUAL_SERVER, name)
 	vs, err := ctr.f5.GetVirtualServer(virtualServerName)
 	if err != nil {
 		glog.Errorf("Error getting virtual server %v. %v", virtualServerName, err)
+		defer ctr.deleteF5Resource(monitorName, MONITOR)
+		defer ctr.deleteF5Resource(poolName, POOL)
 		return
 	}
 	bindPort, _ := strconv.Atoi(config["bind-port"])
+	dest := fmt.Sprintf("%s:%d", bindIP, bindPort)
 	if vs == nil {
-		err = ctr.f5.CreateVirtualServer(virtualServerName, bindIP, "32", poolName, bindPort)
+		err := ctr.createVirtualServer(virtualServerName, poolName, dest)
 		if err != nil {
-			glog.Errorf("Could not create virtual server %v for IP %v in pool %v. %v", virtualServerName, bindIP, poolName, err)
+			glog.Errorf("Error creating virtual server %v. %v", virtualServerName, err)
 			defer ctr.deleteF5Resource(monitorName, MONITOR)
 			defer ctr.deleteF5Resource(poolName, POOL)
 			return
 		}
 		glog.Infof("Virtual server %v created.", virtualServerName)
 	} else {
-		destination := fmt.Sprintf("%s:%d", bindIP, bindPort)
-		if destination != formatVirtualServerDestination(vs.Destination) {
-			vs.Destination = destination
+		if dest != formatVirtualServerDestination(vs.Destination) {
+			vs.Destination = dest
 			err = ctr.f5.ModifyVirtualServer(virtualServerName, vs)
 			if err != nil {
-				glog.Errorf("Error updating virtual server %v destination %v: %v", virtualServerName, destination, err)
+				glog.Errorf("Error updating virtual server %v destination %v: %v", virtualServerName, dest, err)
 			}
-			glog.Infof("Virtual server %v has updated its destination to %v.", virtualServerName, destination)
+			glog.Infof("Virtual server %v has updated its destination to %v.", virtualServerName, dest)
 		}
 	}
 }
@@ -319,6 +313,46 @@ func (ctr *F5Controller) monitorExist(name string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// createPool creates a F5 pool. go-bigip.CreatePool does not allow to set other params except for the name
+func (ctr *F5Controller) createPool(name string, monitor string) error {
+	pool := bigip.Pool{
+		Name:      name,
+		Monitor:   monitor,
+		AllowSNAT: true,
+		AllowNAT:  true,
+	}
+	marshalJSON, _ := pool.MarshalJSON()
+	return ctr.f5ApiCall(string(marshalJSON), "ltm/pool")
+}
+
+func (ctr *F5Controller) createVirtualServer(name, pool string, destination string) error {
+	virtualServer := bigip.VirtualServer{
+		Name:        name,
+		Mask:        "255.255.255.255",
+		Pool:        pool,
+		Destination: destination,
+		SourceAddressTranslation: struct {
+			Type string `json:"type,omitempty"`
+		}{
+			Type: "automap",
+		},
+	}
+	marshalJSON, _ := json.Marshal(virtualServer)
+	return ctr.f5ApiCall(string(marshalJSON), "ltm/virtual")
+}
+
+func (ctr *F5Controller) f5ApiCall(marshalJSON string, url string) error {
+	req := &bigip.APIRequest{
+		Method:      "post",
+		URL:         url,
+		Body:        marshalJSON,
+		ContentType: "application/json",
+	}
+
+	_, callErr := ctr.f5.APICall(req)
+	return callErr
 }
 
 func formatVirtualServerDestination(destination string) string {

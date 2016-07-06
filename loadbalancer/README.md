@@ -6,7 +6,7 @@ Our goal is to have this controller listen to ingress events, rather than config
 to create and configure backend. Eventually, this will be changed to watch for ingress resource instead. This feature is still being planned in kubernetes since the current version
 of ingress does not support layer 4 routing.
 
-This controller is designed to easily integrate and create different load balancing backends. From software, hardware to cloud loadbalancer. Our initial featured backends are software loadbalacing (with keepalived and nginx) and Openstack LBaaS v2 (Octavia) and .
+This controller is designed to easily integrate and create different load balancing backends. From software, hardware to cloud loadbalancer. Our initial featured backends are software loadbalacing (with keepalived and nginx), hardware loadbalancing with F5 and cloud loadbalancing with Openstack LBaaS v2 (Octavia).
 
 In the case for software loadbalacer, this controllers work with loadbalancer-controller daemons which are deployed across nodes which will servers as high available loadbalacers. These daemon controllers use keepalived and nginx to provide 
 the high availability loadbalancing via the use of VIPs. The loadbalance controller will communicate with the daemons via a configmap resource.
@@ -19,7 +19,7 @@ the high availability loadbalancing via the use of VIPs. The loadbalance control
 
 1. First we need to create the loadbalancer controller.
   ```
-  $ kubectl create -f example/ingress-loadbalancer-rc.yaml
+  $ kubectl create -f example/kube-loadbalancer-rc.yaml
   ```
 
 1. The loadbalancer daemon pod will only start in nodes that are labeled `type: loadbalancer`. Label the nodes you want the daemon to run on
@@ -87,7 +87,7 @@ the high availability loadbalancing via the use of VIPs. The loadbalance control
 
 1. First we need to create the loadbalancer controller. You can specify the type of backend used for the loadbalancer via an environment variable. If using openstack loadbalancer, provide your Openstack information as an environment variables. The password is supplied via a secret resource. 
   ```
-  $ kubectl create -f example/ingress-loadbalancer-rc-openstack.yaml
+  $ kubectl create -f example/kube-loadbalancer-rc-openstack.yaml
   ```
 
 1. Create our sample app, which consists of a service and replication controller resource. Since Openstack LBaaS needs to access your apps, make sure your application is deployed with `type: NodePort`:
