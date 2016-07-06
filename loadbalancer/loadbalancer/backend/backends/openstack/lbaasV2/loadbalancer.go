@@ -29,6 +29,8 @@ const (
 	MONITOR      = "monitor"
 )
 
+var empty struct{}
+
 // LBaaSController Controller to manage LBaaS resources
 type LBaaSController struct {
 	kubeClient          *unversioned.Client
@@ -83,6 +85,44 @@ func NewLBaaSController(kubeClient *unversioned.Client, watchNamespace string, c
 		network:             network,
 		subnetID:            os.Getenv("OS_SUBNET_ID"),
 	}
+
+	// sync deleted nodes with loadbalancer pool members
+	nodeIPs, _ := lbaasControl.getReadyNodeIPs()
+	currentNodes := make(map[string]struct{})
+	for _, ip := range nodeIPs {
+		currentNodes[ip] = empty
+	}
+
+	configMapNodePortMap := utils.GetLBConfigMapNodePortMap(kubeClient, watchNamespace, configLabelKey, configLabelValue)
+	for configmapName := range configMapNodePortMap {
+		poolName := getResourceName(POOL, configmapName)
+		poolID, err := lbaasControl.getPoolIDFromName(poolName)
+		if err != nil {
+			glog.Errorf("Could not get pool %v. %v", poolName, err)
+		}
+
+		allPages, err := pools.ListAssociateMembers(network, poolID, pools.MemberListOpts{}).AllPages()
+		if err != nil {
+			glog.Errorf("Error listing pool members %v", err.Error)
+			if strings.Contains(err.Error(), "404") {
+				break
+			}
+		}
+		memberList, _ := pools.ExtractMembers(allPages)
+
+		// check if member IP exist in the Ready node IP list
+		for _, member := range memberList {
+			if _, ok := currentNodes[member.Address]; !ok {
+				// delete the member
+				err = pools.DeleteMember(network, poolID, member.ID).ExtractErr()
+				if err != nil {
+					glog.Errorf("Could not delete member for pool %v. memberID: %v", poolName, member.ID)
+					continue
+				}
+			}
+		}
+	}
+
 	return &lbaasControl, nil
 }
 
@@ -167,7 +207,7 @@ func (lbaas *LBaaSController) checkLoadbalancerExist(cmName string, servicePort 
 
 			if listener.Name == expectedListenerName {
 				if listener.ProtocolPort != expectedBindPort {
-					glog.Infof("Listener protocol port %v is different from expected port %v", listener.ProtocolPort, expectedBindPort)
+					glog.Infof("Listener port %v is different from expected port %v", listener.ProtocolPort, expectedBindPort)
 					return false, nil
 				}
 				// check if loadbalancer listener pool exists
@@ -453,7 +493,6 @@ func (lbaas *LBaaSController) HandleNodeUpdate(oldNode *api.Node, curNode *api.N
 		memberID, err := lbaas.getMemberIDFromIP(poolID, *oldIP)
 		if err != nil {
 			glog.Warningf("Could not get member for pool %v. IP: %v. Creating...", poolName, *oldIP)
-			continue
 		} else {
 			// delete the existing pool member with old IP
 			err = pools.DeleteMember(lbaas.network, poolID, memberID).ExtractErr()
