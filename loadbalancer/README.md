@@ -19,7 +19,7 @@ the high availability loadbalancing via the use of VIPs. The loadbalance control
 
 1. First we need to create the loadbalancer controller.
   ```
-  $ kubectl create -f example/kube-loadbalancer-rc.yaml
+  $ kubectl create -f examples/kube-loadbalancer-rc.yaml
   ```
 
 1. The loadbalancer daemon pod will only start in nodes that are labeled `type: loadbalancer`. Label the nodes you want the daemon to run on
