@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 
@@ -69,7 +70,7 @@ func (lbControl *LoadbalancerDaemonController) GetBindIP(name string) string {
 }
 
 // HandleConfigMapCreate a new loadbalancer resource
-func (lbControl *LoadbalancerDaemonController) HandleConfigMapCreate(configMap *api.ConfigMap) {
+func (lbControl *LoadbalancerDaemonController) HandleConfigMapCreate(configMap *api.ConfigMap) error {
 	name := configMap.Namespace + "-" + configMap.Name
 	glog.Infof("Adding group %v to daemon configmap", name)
 
@@ -80,21 +81,21 @@ func (lbControl *LoadbalancerDaemonController) HandleConfigMapCreate(configMap *
 	serviceName := cmData["target-service-name"]
 	serviceObj, err := lbControl.kubeClient.Services(namespace).Get(serviceName)
 	if err != nil {
-		glog.Errorf("Error getting service object %v/%v. %v", namespace, serviceName, err)
-		return
+		err = fmt.Errorf("Error getting service object %v/%v. %v", namespace, serviceName, err)
+		return err
 	}
 
 	servicePort, err := utils.GetServicePort(serviceObj, cmData["target-port-name"])
 	if err != nil {
-		glog.Errorf("Error while getting the service port %v", err)
-		return
+		err = fmt.Errorf("Error while getting the service port %v", err)
+		return err
 	}
 
 	//generate Virtual IP
 	bindIP, err := lbControl.ipManager.GenerateVirtualIP(configMap)
 	if err != nil {
-		glog.Errorf("Error generating Virtual IP - %v", err)
-		return
+		err = fmt.Errorf("Error generating Virtual IP - %v", err)
+		return err
 	}
 
 	daemonData[name+".namespace"] = namespace
@@ -108,7 +109,7 @@ func (lbControl *LoadbalancerDaemonController) HandleConfigMapCreate(configMap *
 	if err != nil {
 		glog.Infof("Error updating daemon configmap %v: %v", daemonCM.Name, err)
 	}
-
+	return nil
 }
 
 // HandleConfigMapDelete the lbaas loadbalancer resource

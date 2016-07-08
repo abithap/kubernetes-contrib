@@ -15,7 +15,7 @@ import (
 type BackendController interface {
 	Name() string
 	GetBindIP(name string) string
-	HandleConfigMapCreate(configMap *api.ConfigMap)
+	HandleConfigMapCreate(configMap *api.ConfigMap) error
 	HandleConfigMapDelete(name string)
 	HandleNodeCreate(node *api.Node)
 	HandleNodeDelete(node *api.Node)

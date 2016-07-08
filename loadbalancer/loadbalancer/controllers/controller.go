@@ -177,13 +177,21 @@ func (lbController *LoadBalancerController) syncConfigMap(key string) {
 	} else {
 		go func() {
 			configMap := obj.(*api.ConfigMap)
-			lbController.backendController.HandleConfigMapCreate(configMap)
+			err := lbController.backendController.HandleConfigMapCreate(configMap)
+			if err != nil {
+				glog.Errorf("Error creating loadbalancer: %v", err)
+				lbController.updateConfigMapStatus(err.Error(), configMap)
+				return
+			}
 			bindIP := lbController.backendController.GetBindIP(name)
 			configMapData := configMap.Data
 			configMapData["bind-ip"] = bindIP
 			_, err = lbController.client.ConfigMaps(configMap.Namespace).Update(configMap)
 			if err != nil {
 				glog.Errorf("Error updating bind ip %v in configmap %v", bindIP, name)
+				lbController.updateConfigMapStatus("Error updating Bind IP", configMap)
+			} else {
+				lbController.updateConfigMapStatus("", configMap)
 			}
 		}()
 	}
@@ -191,4 +199,20 @@ func (lbController *LoadBalancerController) syncConfigMap(key string) {
 
 func configmapsEqual(m1 map[string]string, m2 map[string]string) bool {
 	return m1["namespace"] == m2["namespace"] && m1["bind-port"] == m2["bind-port"] && m1["target-service-name"] == m2["target-service-name"] && m1["target-port-name"] == m2["target-port-name"]
+}
+
+// update user configmap with status
+func (lbController *LoadBalancerController) updateConfigMapStatus(errMessage string, configMap *api.ConfigMap) {
+	var statusMsg string
+	configMapData := configMap.Data
+	if errMessage != "" {
+		statusMsg = "ERROR : " + errMessage
+	} else {
+		statusMsg = "SUCCESS"
+	}
+	configMapData["status"] = statusMsg
+	_, err := lbController.client.ConfigMaps(configMap.Namespace).Update(configMap)
+	if err != nil {
+		glog.Errorf("Error updating configMap %v status : %v", configMap.Name, err)
+	}
 }

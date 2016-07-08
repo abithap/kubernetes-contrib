@@ -82,7 +82,7 @@ func (ctr *F5Controller) GetBindIP(name string) string {
 }
 
 // HandleConfigMapCreate creates a new F5 pool, nodes, monitor and virtual server to provide loadbalancing to the app defined in the configmap
-func (ctr *F5Controller) HandleConfigMapCreate(configMap *api.ConfigMap) {
+func (ctr *F5Controller) HandleConfigMapCreate(configMap *api.ConfigMap) error {
 	name := configMap.Namespace + "-" + configMap.Name
 
 	config := configMap.Data
@@ -90,37 +90,37 @@ func (ctr *F5Controller) HandleConfigMapCreate(configMap *api.ConfigMap) {
 	namespace := config["namespace"]
 	serviceObj, err := ctr.kubeClient.Services(namespace).Get(serviceName)
 	if err != nil {
-		glog.Errorf("Error getting service object %v/%v. %v", namespace, serviceName, err)
-		return
+		err = fmt.Errorf("Error getting service object %v/%v. %v", namespace, serviceName, err)
+		return err
 	}
 	servicePort, err := utils.GetServicePort(serviceObj, config["target-port-name"])
 	if err != nil {
-		glog.Errorf("Error while getting the service port %v", err)
-		return
+		err = fmt.Errorf("Error while getting the service port %v", err)
+		return err
 	}
 	if servicePort.NodePort == 0 {
-		glog.Errorf("NodePort is needed for loadbalancer")
-		return
+		err = fmt.Errorf("NodePort is needed for loadbalancer")
+		return err
 	}
 
 	//generate Virtual IP
 	bindIP, err := ctr.ipManager.GenerateVirtualIP(configMap)
 	if err != nil {
-		glog.Errorf("Error generating Virtual IP - %v", err)
-		return
+		err = fmt.Errorf("Error generating Virtual IP - %v", err)
+		return err
 	}
 
 	monitorName := getResourceName(MONITOR, name)
 	monExist, err := ctr.monitorExist(monitorName)
 	if err != nil {
-		glog.Errorf("Error accessing monitors. %v", err)
-		return
+		err = fmt.Errorf("Error accessing monitors. %v", err)
+		return err
 	}
 	if !monExist {
 		err = ctr.f5.CreateMonitor(monitorName, MONITOR_PROTOCOL, 5, 16, "", "")
 		if err != nil {
-			glog.Errorf("Could not create monitor %v. %v", monitorName, err)
-			return
+			err = fmt.Errorf("Could not create monitor %v. %v", monitorName, err)
+			return err
 		}
 		glog.Infof("Monitor %v created.", monitorName)
 	}
@@ -128,16 +128,16 @@ func (ctr *F5Controller) HandleConfigMapCreate(configMap *api.ConfigMap) {
 	poolName := getResourceName(POOL, name)
 	pool, err := ctr.f5.GetPool(poolName)
 	if err != nil {
-		glog.Errorf("Error getting pool %v. %v", poolName, err)
+		err = fmt.Errorf("Error getting pool %v. %v", poolName, err)
 		defer ctr.deleteF5Resource(monitorName, MONITOR)
-		return
+		return err
 	}
 	if pool == nil {
 		err = ctr.createPool(poolName, monitorName)
 		if err != nil {
-			glog.Errorf("Error creating pool %v. %v", poolName, err)
+			err = fmt.Errorf("Error creating pool %v. %v", poolName, err)
 			defer ctr.deleteF5Resource(monitorName, MONITOR)
-			return
+			return err
 		}
 		glog.Infof("Pool %v created.", poolName)
 	}
@@ -167,20 +167,20 @@ func (ctr *F5Controller) HandleConfigMapCreate(configMap *api.ConfigMap) {
 	virtualServerName := getResourceName(VIRTUAL_SERVER, name)
 	vs, err := ctr.f5.GetVirtualServer(virtualServerName)
 	if err != nil {
-		glog.Errorf("Error getting virtual server %v. %v", virtualServerName, err)
+		err = fmt.Errorf("Error getting virtual server %v. %v", virtualServerName, err)
 		defer ctr.deleteF5Resource(monitorName, MONITOR)
 		defer ctr.deleteF5Resource(poolName, POOL)
-		return
+		return err
 	}
 	bindPort, _ := strconv.Atoi(config["bind-port"])
 	dest := fmt.Sprintf("%s:%d", bindIP, bindPort)
 	if vs == nil {
 		err := ctr.createVirtualServer(virtualServerName, poolName, dest)
 		if err != nil {
-			glog.Errorf("Error creating virtual server %v. %v", virtualServerName, err)
+			err = fmt.Errorf("Error creating virtual server %v. %v", virtualServerName, err)
 			defer ctr.deleteF5Resource(monitorName, MONITOR)
 			defer ctr.deleteF5Resource(poolName, POOL)
-			return
+			return err
 		}
 		glog.Infof("Virtual server %v created.", virtualServerName)
 	} else {
@@ -193,6 +193,7 @@ func (ctr *F5Controller) HandleConfigMapCreate(configMap *api.ConfigMap) {
 			glog.Infof("Virtual server %v has updated its destination to %v.", virtualServerName, dest)
 		}
 	}
+	return nil
 }
 
 // HandleConfigMapDelete delete all the resources created in F5 for load balancing an app
