@@ -133,7 +133,7 @@ func (lbaas *LBaaSController) Name() string {
 }
 
 // GetBindIP returns the IP used by users to access their apps
-func (lbaas *LBaaSController) GetBindIP(name string) string {
+func (lbaas *LBaaSController) GetBindIP(name string) (string, error) {
 	// Find loadbalancer by name
 	lbName := getResourceName(LOADBALANCER, name)
 	opts := loadbalancers.ListOpts{Name: lbName}
@@ -160,9 +160,10 @@ func (lbaas *LBaaSController) GetBindIP(name string) string {
 
 	if lbErr != nil {
 		glog.Errorf("Could not get list of loadbalancer. %v.", lbErr)
+		return "", lbErr
 	}
 
-	return bindIP
+	return bindIP, nil
 }
 
 // check if Loadbalancer already exists with the correct resources

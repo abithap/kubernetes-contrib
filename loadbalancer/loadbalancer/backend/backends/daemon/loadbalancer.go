@@ -63,10 +63,10 @@ func (lbControl *LoadbalancerDaemonController) Name() string {
 }
 
 // GetBindIP returns the IP used by users to access their apps
-func (lbControl *LoadbalancerDaemonController) GetBindIP(name string) string {
+func (lbControl *LoadbalancerDaemonController) GetBindIP(name string) (string, error) {
 	daemonCM := lbControl.getDaemonConfigMap()
 	daemonData := daemonCM.Data
-	return daemonData[name+".bind-ip"]
+	return daemonData[name+".bind-ip"], nil
 }
 
 // HandleConfigMapCreate a new loadbalancer resource

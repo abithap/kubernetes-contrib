@@ -17,6 +17,7 @@ limitations under the License.
 package controllers
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -180,18 +181,15 @@ func (lbController *LoadBalancerController) syncConfigMap(key string) {
 			err := lbController.backendController.HandleConfigMapCreate(configMap)
 			if err != nil {
 				glog.Errorf("Error creating loadbalancer: %v", err)
-				lbController.updateConfigMapStatus(err.Error(), configMap)
+				lbController.updateConfigMapStatusBindIP(err.Error(), "", configMap)
 				return
 			}
-			bindIP := lbController.backendController.GetBindIP(name)
-			configMapData := configMap.Data
-			configMapData["bind-ip"] = bindIP
-			_, err = lbController.client.ConfigMaps(configMap.Namespace).Update(configMap)
+			bindIP, err := lbController.backendController.GetBindIP(name)
 			if err != nil {
-				glog.Errorf("Error updating bind ip %v in configmap %v", bindIP, name)
-				lbController.updateConfigMapStatus("Error updating Bind IP", configMap)
+				err = fmt.Errorf("Error getting bind IP for %v configmap: %v", name, err)
+				lbController.updateConfigMapStatusBindIP(err.Error(), "", configMap)
 			} else {
-				lbController.updateConfigMapStatus("", configMap)
+				lbController.updateConfigMapStatusBindIP("", bindIP, configMap)
 			}
 		}()
 	}
@@ -202,17 +200,25 @@ func configmapsEqual(m1 map[string]string, m2 map[string]string) bool {
 }
 
 // update user configmap with status
-func (lbController *LoadBalancerController) updateConfigMapStatus(errMessage string, configMap *api.ConfigMap) {
+func (lbController *LoadBalancerController) updateConfigMapStatusBindIP(errMessage string, bindIP string, configMap *api.ConfigMap) {
 	var statusMsg string
 	configMapData := configMap.Data
+
+	//set status
 	if errMessage != "" {
 		statusMsg = "ERROR : " + errMessage
 	} else {
 		statusMsg = "SUCCESS"
 	}
 	configMapData["status"] = statusMsg
+
+	//set bind IP
+	if bindIP != "" {
+		configMapData["bind-ip"] = bindIP
+	}
+
 	_, err := lbController.client.ConfigMaps(configMap.Namespace).Update(configMap)
 	if err != nil {
-		glog.Errorf("Error updating configMap %v status : %v", configMap.Name, err)
+		glog.Errorf("Error updating ConfigMap Status : %v", err)
 	}
 }

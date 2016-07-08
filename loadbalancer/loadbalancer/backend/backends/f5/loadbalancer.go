@@ -68,17 +68,17 @@ func (ctr *F5Controller) Name() string {
 }
 
 // GetBindIP returns the IP used by users to access their apps
-func (ctr *F5Controller) GetBindIP(name string) string {
+func (ctr *F5Controller) GetBindIP(name string) (string, error) {
 	virtualServerName := getResourceName(VIRTUAL_SERVER, name)
 	virtualServer, err := ctr.f5.GetVirtualServer(virtualServerName)
 	if err != nil {
-		glog.Errorf("Error getting virtual server %v. %v", virtualServerName, err)
-		return ""
+		err = fmt.Errorf("Error getting virtual server %v. %v", virtualServerName, err)
+		return "", err
 	}
 	if virtualServer == nil {
-		return ""
+		return "", nil
 	}
-	return formatVirtualServerDestination(virtualServer.Destination)
+	return formatVirtualServerDestination(virtualServer.Destination), nil
 }
 
 // HandleConfigMapCreate creates a new F5 pool, nodes, monitor and virtual server to provide loadbalancing to the app defined in the configmap
