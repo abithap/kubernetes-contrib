@@ -14,6 +14,7 @@ import (
 	"github.com/rackspace/gophercloud/openstack/networking/v2/extensions/lbaas_v2/loadbalancers"
 	"github.com/rackspace/gophercloud/openstack/networking/v2/extensions/lbaas_v2/monitors"
 	"github.com/rackspace/gophercloud/openstack/networking/v2/extensions/lbaas_v2/pools"
+	"github.com/rackspace/gophercloud/openstack/networking/v2/subnets"
 	"github.com/rackspace/gophercloud/pagination"
 	"k8s.io/contrib/loadbalancer/loadbalancer/backend"
 	"k8s.io/contrib/loadbalancer/loadbalancer/utils"
@@ -84,6 +85,16 @@ func NewLBaaSController(kubeClient *unversioned.Client, watchNamespace string, c
 		compute:             compute,
 		network:             network,
 		subnetID:            os.Getenv("OS_SUBNET_ID"),
+	}
+
+	// check if subnet-id exists
+	_, err = subnets.Get(network, lbaasControl.subnetID).Extract()
+	if err != nil {
+		glog.Infof("Error checking subnet-id: %v %v", lbaasControl.subnetID, err)
+		if strings.Contains(err.Error(), "404") {
+			//subnetID not found
+			return nil, err
+		}
 	}
 
 	// sync deleted nodes with loadbalancer pool members
