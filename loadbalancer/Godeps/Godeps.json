@@ -313,6 +313,11 @@
 			"Rev": "67139b9485d6fd682c5314e963b0915e18f7947a"
 		},
 		{
+			"ImportPath": "github.com/rackspace/gophercloud/openstack/networking/v2/subnets",
+			"Comment": "v1.0.0-918-g67139b9",
+			"Rev": "67139b9485d6fd682c5314e963b0915e18f7947a"
+		},
+		{
 			"ImportPath": "github.com/rackspace/gophercloud/openstack/utils",
 			"Comment": "v1.0.0-918-g67139b9",
 			"Rev": "67139b9485d6fd682c5314e963b0915e18f7947a"
