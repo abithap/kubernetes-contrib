@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/golang/glog"
@@ -119,21 +120,27 @@ func GetNodeHostIP(node api.Node) (*string, error) {
 	return nil, fmt.Errorf("Host IP unknown; known addresses: %v", addresses)
 }
 
-// Get the port service based on the name. If no name is given, return the first port found
-func GetServicePort(service *api.Service, portName string) (*api.ServicePort, error) {
+// GetServicePorts return a map of port name to port from the service. If nodePort is true, the ports returns will be nodeports. Otherwise, the service ports will be returned
+func GetServicePorts(service *api.Service, nodePort bool) (map[string]string, error) {
 	if len(service.Spec.Ports) == 0 {
 		return nil, fmt.Errorf("Could not find any port from service %v.", service.Name)
 	}
 
-	if portName == "" {
-		return &service.Spec.Ports[0], nil
-	}
-	for _, p := range service.Spec.Ports {
-		if p.Name == portName {
-			return &p, nil
+	portMap := make(map[string]string)
+	for index, portObj := range service.Spec.Ports {
+		portName := portObj.Name
+		if len(portName) == 0 {
+			portName = "port" + strconv.Itoa(index)
 		}
+		var port int
+		if nodePort {
+			port = int(portObj.NodePort)
+		} else {
+			port = int(portObj.Port)
+		}
+		portMap[portName] = strconv.Itoa(port)
 	}
-	return nil, fmt.Errorf("Could not find matching port %v from service %v.", portName, service.Name)
+	return portMap, nil
 }
 
 // Filter uses the input function f to filter the given node list, and return the filtered nodes
@@ -159,8 +166,8 @@ func NodeReady(node api.Node) bool {
 }
 
 // GetLBConfigMapNodePortMap fetches all the configmaps and returns a map of loadbalancer configmaps to node port
-func GetLBConfigMapNodePortMap(client *unversioned.Client, configMapNamespace string, configMapLabelKey, configMapLabelValue string) map[string]int {
-	configMapNodePortMap := make(map[string]int)
+func GetLBConfigMapNodePortMap(client *unversioned.Client, configMapNamespace string, configMapLabelKey, configMapLabelValue string) map[string][]string {
+	configMapNodePortMap := make(map[string][]string)
 	labelSelector := labels.Set{configMapLabelKey: configMapLabelValue}.AsSelector()
 	opt := api.ListOptions{LabelSelector: labelSelector}
 	configmaps, err := client.ConfigMaps(configMapNamespace).List(opt)
@@ -178,19 +185,23 @@ func GetLBConfigMapNodePortMap(client *unversioned.Client, configMapNamespace st
 			continue
 		}
 
-		targetPort, _ := cmData["target-port-name"]
-		servicePort, err := GetServicePort(serviceObj, targetPort)
+		if serviceObj.Spec.Type != api.ServiceTypeNodePort {
+			glog.Warningf("Service %v does not have a type nodeport", serviceName)
+			continue
+		}
+
+		servicePorts, err := GetServicePorts(serviceObj, true)
 		if err != nil {
-			glog.Errorf("Error while getting the service port %v", err)
+			glog.Errorf("Error while getting the service ports %v", err)
 			continue
 		}
 
-		if servicePort.NodePort == 0 {
-			glog.Warningf("Service %v does not have a nodeport", serviceName)
-			continue
+		ports := []string{}
+		for _, port := range servicePorts {
+			ports = append(ports, port)
 		}
 
-		configMapNodePortMap[namespace+"-"+cm.Name] = int(servicePort.NodePort)
+		configMapNodePortMap[namespace+"-"+cm.Name] = ports
 	}
 	return configMapNodePortMap
 }

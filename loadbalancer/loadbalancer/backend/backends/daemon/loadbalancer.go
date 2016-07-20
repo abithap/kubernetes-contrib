@@ -3,7 +3,6 @@ package daemon
 import (
 	"fmt"
 	"os"
-	"strconv"
 
 	"github.com/golang/glog"
 	"k8s.io/contrib/loadbalancer/loadbalancer/backend"
@@ -85,12 +84,6 @@ func (lbControl *LoadbalancerDaemonController) HandleConfigMapCreate(configMap *
 		return err
 	}
 
-	servicePort, err := utils.GetServicePort(serviceObj, cmData["target-port-name"])
-	if err != nil {
-		err = fmt.Errorf("Error while getting the service port %v", err)
-		return err
-	}
-
 	//generate Virtual IP
 	bindIP, err := lbControl.ipManager.GenerateVirtualIP(configMap)
 	if err != nil {
@@ -98,12 +91,18 @@ func (lbControl *LoadbalancerDaemonController) HandleConfigMapCreate(configMap *
 		return err
 	}
 
+	servicePorts := utils.GetServicePorts(serviceObj, false)
+	if err != nil {
+		err = fmt.Errorf("Error while getting the service ports %v", err)
+		return err
+	}
 	daemonData[name+".namespace"] = namespace
 	daemonData[name+".bind-ip"] = bindIP
-	daemonData[name+".bind-port"] = cmData["bind-port"]
 	daemonData[name+".target-service-name"] = serviceName
 	daemonData[name+".target-ip"] = serviceObj.Spec.ClusterIP
-	daemonData[name+".target-port"] = strconv.Itoa(int(servicePort.Port))
+	for portName, port := range servicePorts {
+		daemonData[name+"."+portName] = port
+	}
 
 	_, err = lbControl.kubeClient.ConfigMaps(lbControl.namespace).Update(daemonCM)
 	if err != nil {
@@ -119,7 +118,6 @@ func (lbControl *LoadbalancerDaemonController) HandleConfigMapDelete(name string
 	daemonData := daemonCM.Data
 	delete(daemonData, name+".namespace")
 	delete(daemonData, name+".bind-ip")
-	delete(daemonData, name+".bind-port")
 	delete(daemonData, name+".target-service-name")
 	delete(daemonData, name+".target-ip")
 	delete(daemonData, name+".target-port")

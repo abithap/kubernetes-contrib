@@ -196,7 +196,7 @@ func (lbController *LoadBalancerController) syncConfigMap(key string) {
 }
 
 func configmapsEqual(m1 map[string]string, m2 map[string]string) bool {
-	return m1["namespace"] == m2["namespace"] && m1["bind-port"] == m2["bind-port"] && m1["target-service-name"] == m2["target-service-name"] && m1["target-port-name"] == m2["target-port-name"]
+	return m1["namespace"] == m2["namespace"] && m1["target-service-name"] == m2["target-service-name"]
 }
 
 // update user configmap with status
