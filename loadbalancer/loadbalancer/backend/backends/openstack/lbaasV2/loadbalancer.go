@@ -263,19 +263,15 @@ func (lbaas *LBaaSController) HandleConfigMapCreate(configMap *api.ConfigMap) er
 		return err
 	}
 
-	servicePort, err := utils.GetServicePort(serviceObj, config["target-port-name"])
-	if err != nil {
-		err = fmt.Errorf("Error while getting the service port %v", err)
-		return err
-	}
-
+	// Use the first port for now
+	servicePort := serviceObj.Spec.Ports[0]
 	if servicePort.NodePort == 0 {
 		err = fmt.Errorf("NodePort is needed for loadbalancer")
 		return err
 	}
 
 	// check if the loadbalancer already exists
-	lbExists, err := lbaas.checkLoadbalancerExist(name, servicePort, config["bind-port"])
+	lbExists, err := lbaas.checkLoadbalancerExist(name, &servicePort, config["bind-port"])
 	if err != nil {
 		glog.Errorf("Error checking %v loadbalancer existence: %v", getResourceName(LOADBALANCER, name), err)
 	}
@@ -436,16 +432,16 @@ func (lbaas *LBaaSController) HandleNodeCreate(node *api.Node) {
 	}
 	configMapNodePortMap := utils.GetLBConfigMapNodePortMap(lbaas.kubeClient, lbaas.watchNamespace, lbaas.configMapLabelKey, lbaas.configMapLabelValue)
 
-	for configmapName, nodePort := range configMapNodePortMap {
+	for configmapName, nodePorts := range configMapNodePortMap {
 		poolName := getResourceName(POOL, configmapName)
 		poolID, err := lbaas.getPoolIDFromName(poolName)
 		if err != nil {
 			glog.Errorf("Could not get pool %v. %v", poolName, err)
 			continue
 		}
-		memberID, err := lbaas.createMemberResource(poolID, *ip, nodePort)
+		memberID, err := lbaas.createMemberResource(poolID, *ip, nodePorts[0])
 		if err != nil {
-			glog.Errorf("Could not create member for pool %v. IP: %v. Port: %v", poolName, *ip, nodePort)
+			glog.Errorf("Could not create member for pool %v. IP: %v. Port: %v", poolName, *ip, nodePorts[0])
 			continue
 		}
 		glog.Infof("Created member for %v. ID: %v", *ip, memberID)
@@ -497,7 +493,7 @@ func (lbaas *LBaaSController) HandleNodeUpdate(oldNode *api.Node, curNode *api.N
 
 	configMapNodePortMap := utils.GetLBConfigMapNodePortMap(lbaas.kubeClient, lbaas.watchNamespace, lbaas.configMapLabelKey, lbaas.configMapLabelValue)
 
-	for configmapName, nodePort := range configMapNodePortMap {
+	for configmapName, nodePorts := range configMapNodePortMap {
 		poolName := getResourceName(POOL, configmapName)
 		poolID, err := lbaas.getPoolIDFromName(poolName)
 		if err != nil {
@@ -518,9 +514,9 @@ func (lbaas *LBaaSController) HandleNodeUpdate(oldNode *api.Node, curNode *api.N
 		}
 
 		// create the pool member again to update with new IP
-		memberID, err = lbaas.createMemberResource(poolID, *newIP, nodePort)
+		memberID, err = lbaas.createMemberResource(poolID, *newIP, nodePorts[0])
 		if err != nil {
-			glog.Errorf("Could not create member for pool %v. IP: %v. Port: %v", poolName, *newIP, nodePort)
+			glog.Errorf("Could not create member for pool %v. IP: %v. Port: %v", poolName, *newIP, nodePorts[0])
 			continue
 		}
 		glog.Infof("Created member for %v. ID: %v", *newIP, memberID)

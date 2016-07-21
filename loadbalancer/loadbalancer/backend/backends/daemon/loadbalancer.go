@@ -3,11 +3,11 @@ package daemon
 import (
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/golang/glog"
 	"k8s.io/contrib/loadbalancer/loadbalancer/backend"
 	"k8s.io/contrib/loadbalancer/loadbalancer/controllers"
-	"k8s.io/contrib/loadbalancer/loadbalancer/utils"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/client/unversioned"
 )
@@ -91,17 +91,17 @@ func (lbControl *LoadbalancerDaemonController) HandleConfigMapCreate(configMap *
 		return err
 	}
 
-	servicePorts := utils.GetServicePorts(serviceObj, false)
-	if err != nil {
-		err = fmt.Errorf("Error while getting the service ports %v", err)
+	servicePorts := serviceObj.Spec.Ports
+	if len(servicePorts) == 0 {
+		err = fmt.Errorf("Could not find any port from service %v.", serviceName)
 		return err
 	}
 	daemonData[name+".namespace"] = namespace
 	daemonData[name+".bind-ip"] = bindIP
 	daemonData[name+".target-service-name"] = serviceName
 	daemonData[name+".target-ip"] = serviceObj.Spec.ClusterIP
-	for portName, port := range servicePorts {
-		daemonData[name+"."+portName] = port
+	for i, port := range servicePorts {
+		daemonData[name+".port"+strconv.Itoa(i)] = strconv.Itoa(int(port.Port))
 	}
 
 	_, err = lbControl.kubeClient.ConfigMaps(lbControl.namespace).Update(daemonCM)
@@ -122,6 +122,12 @@ func (lbControl *LoadbalancerDaemonController) HandleConfigMapDelete(name string
 	delete(daemonData, name+".target-ip")
 	delete(daemonData, name+".target-port")
 
+	i := 0
+	for _, exist := daemonData[name+".port"+strconv.Itoa(i)]; exist; {
+		delete(daemonData, name+".port"+strconv.Itoa(i))
+		i++
+		_, exist = daemonData[name+".port"+strconv.Itoa(i)]
+	}
 	_, err := lbControl.kubeClient.ConfigMaps(lbControl.namespace).Update(daemonCM)
 	if err != nil {
 		glog.Infof("Error updating daemon configmap %v: %v", daemonCM.Name, err)

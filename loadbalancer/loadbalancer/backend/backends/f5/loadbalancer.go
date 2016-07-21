@@ -93,11 +93,7 @@ func (ctr *F5Controller) HandleConfigMapCreate(configMap *api.ConfigMap) error {
 		err = fmt.Errorf("Error getting service object %v/%v. %v", namespace, serviceName, err)
 		return err
 	}
-	servicePort, err := utils.GetServicePort(serviceObj, config["target-port-name"])
-	if err != nil {
-		err = fmt.Errorf("Error while getting the service port %v", err)
-		return err
-	}
+	servicePort := serviceObj.Spec.Ports[0]
 	if servicePort.NodePort == 0 {
 		err = fmt.Errorf("NodePort is needed for loadbalancer")
 		return err
@@ -243,9 +239,9 @@ func (ctr *F5Controller) HandleNodeCreate(node *api.Node) {
 	}
 
 	configMapNodePortMap := utils.GetLBConfigMapNodePortMap(ctr.kubeClient, ctr.watchNamespace, ctr.configMapLabelKey, ctr.configMapLabelValue)
-	for configmapName, nodePort := range configMapNodePortMap {
+	for configmapName, nodePorts := range configMapNodePortMap {
 		poolName := getResourceName(POOL, configmapName)
-		member := node.Name + ":" + strconv.Itoa(int(nodePort))
+		member := node.Name + ":" + strconv.Itoa(nodePorts[0])
 		err = ctr.f5.AddPoolMember(poolName, member)
 		glog.Infof("Created member %v in pool %v", member, poolName)
 	}
@@ -254,9 +250,9 @@ func (ctr *F5Controller) HandleNodeCreate(node *api.Node) {
 // HandleNodeDelete deletes member for this node
 func (ctr *F5Controller) HandleNodeDelete(node *api.Node) {
 	configMapNodePortMap := utils.GetLBConfigMapNodePortMap(ctr.kubeClient, ctr.watchNamespace, ctr.configMapLabelKey, ctr.configMapLabelValue)
-	for configmapName, nodePort := range configMapNodePortMap {
+	for configmapName, nodePorts := range configMapNodePortMap {
 		poolName := getResourceName(POOL, configmapName)
-		member := node.Name + ":" + strconv.Itoa(int(nodePort))
+		member := node.Name + ":" + strconv.Itoa(nodePorts[0])
 		err := ctr.f5.DeletePoolMember(poolName, member)
 		if err != nil {
 			glog.Errorf("Could not delete member %v from pool %v. %v", member, poolName, err)
