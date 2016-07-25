@@ -36,6 +36,7 @@ const (
 var ErrIPRangeExhausted = errors.New("Exhausted given Virtual IP range")
 
 var ipConfigMutex sync.Mutex
+var ipConfigMapMutex sync.Mutex
 var empty struct{}
 
 type IPManager struct {
@@ -256,6 +257,9 @@ func (ipManager *IPManager) checkInIPRange(ip string) bool {
 
 // update ip configmap
 func (ipManager *IPManager) updateIPConfigMap(configMap *api.ConfigMap) error {
+	// Block execution until the ip config map gets updated
+	ipConfigMapMutex.Lock()
+	defer ipConfigMapMutex.Unlock()
 	_, err := ipManager.kubeClient.ConfigMaps(ipManager.namespace).Update(configMap)
 	if err != nil {
 		return err

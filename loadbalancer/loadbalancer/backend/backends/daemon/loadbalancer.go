@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"sync"
 
 	"github.com/golang/glog"
 	"k8s.io/contrib/loadbalancer/loadbalancer/backend"
@@ -17,6 +18,8 @@ const (
 	configLabelValue     = "daemon"
 	defaultConfigMapName = "daemon-configmap"
 )
+
+var configMapMutex sync.Mutex
 
 // LoadbalancerDaemonController Controller to communicate with loadbalancer-daemon controllers
 type LoadbalancerDaemonController struct {
@@ -70,6 +73,10 @@ func (lbControl *LoadbalancerDaemonController) GetBindIP(name string) (string, e
 
 // HandleConfigMapCreate a new loadbalancer resource
 func (lbControl *LoadbalancerDaemonController) HandleConfigMapCreate(configMap *api.ConfigMap) error {
+
+	// Block execution until the ip config map gets updated
+	configMapMutex.Lock()
+	defer configMapMutex.Unlock()
 	name := configMap.Namespace + "-" + configMap.Name
 	glog.Infof("Adding group %v to daemon configmap", name)
 
@@ -113,6 +120,8 @@ func (lbControl *LoadbalancerDaemonController) HandleConfigMapCreate(configMap *
 
 // HandleConfigMapDelete the lbaas loadbalancer resource
 func (lbControl *LoadbalancerDaemonController) HandleConfigMapDelete(name string) {
+	// Block execution until the ip config map gets updated
+	configMapMutex.Lock()
 	glog.Infof("Deleting group %v from daemon configmap", name)
 	daemonCM := lbControl.getDaemonConfigMap()
 	daemonData := daemonCM.Data
@@ -129,6 +138,7 @@ func (lbControl *LoadbalancerDaemonController) HandleConfigMapDelete(name string
 		_, exist = daemonData[name+".port"+strconv.Itoa(i)]
 	}
 	_, err := lbControl.kubeClient.ConfigMaps(lbControl.namespace).Update(daemonCM)
+	configMapMutex.Unlock()
 	if err != nil {
 		glog.Infof("Error updating daemon configmap %v: %v", daemonCM.Name, err)
 	}
