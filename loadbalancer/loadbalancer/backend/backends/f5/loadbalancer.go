@@ -106,10 +106,26 @@ func (ctr *F5Controller) HandleConfigMapCreate(configMap *api.ConfigMap) error {
 		return err
 	}
 
+	monitorName := utils.GetResourceName(MONITOR, name)
+	monExist, err := ctr.monitorExist(monitorName)
+	if err != nil {
+		err = fmt.Errorf("Error accessing monitors. %v", err)
+		return err
+	}
+	if !monExist {
+		err = ctr.f5.CreateMonitor(monitorName, MONITOR_PROTOCOL, 5, 16, "", "")
+		if err != nil {
+			err = fmt.Errorf("Could not create monitor %v. %v", monitorName, err)
+			return err
+		}
+		glog.Infof("Monitor %v created.", monitorName)
+	}
+
 	if len(serviceObj.Spec.Ports) == 0 {
 		return fmt.Errorf("Could not find any port from service %v.", serviceObj.Name)
 	}
 
+	servicePortCreated := []string{}
 	for _, p := range serviceObj.Spec.Ports {
 		servicePortName := p.Name
 		if p.NodePort == 0 {
@@ -117,33 +133,18 @@ func (ctr *F5Controller) HandleConfigMapCreate(configMap *api.ConfigMap) error {
 			return err
 		}
 
-		monitorName := utils.GetResourceName(MONITOR, name, servicePortName)
-		monExist, err := ctr.monitorExist(monitorName)
-		if err != nil {
-			err = fmt.Errorf("Error accessing monitors. %v", err)
-			return err
-		}
-		if !monExist {
-			err = ctr.f5.CreateMonitor(monitorName, MONITOR_PROTOCOL, 5, 16, "", "")
-			if err != nil {
-				err = fmt.Errorf("Could not create monitor %v. %v", monitorName, err)
-				return err
-			}
-			glog.Infof("Monitor %v created.", monitorName)
-		}
-
 		poolName := utils.GetResourceName(POOL, name, servicePortName)
 		pool, err := ctr.f5.GetPool(poolName)
 		if err != nil {
 			err = fmt.Errorf("Error getting pool %v. %v", poolName, err)
-			defer ctr.deleteF5Resource(monitorName, MONITOR)
+			ctr.deletePreviouslyCreatedF5Resources(servicePortCreated, name)
 			return err
 		}
 		if pool == nil {
 			err = ctr.createPool(poolName, monitorName)
 			if err != nil {
 				err = fmt.Errorf("Error creating pool %v. %v", poolName, err)
-				defer ctr.deleteF5Resource(monitorName, MONITOR)
+				ctr.deletePreviouslyCreatedF5Resources(servicePortCreated, name)
 				return err
 			}
 			glog.Infof("Pool %v created.", poolName)
@@ -153,8 +154,9 @@ func (ctr *F5Controller) HandleConfigMapCreate(configMap *api.ConfigMap) error {
 		nodes, err := ctr.kubeClient.Nodes().List(api.ListOptions{})
 		if err != nil {
 			glog.Errorf("Error listing nodes %v", err)
-			defer ctr.deleteF5Resource(monitorName, MONITOR)
-			defer ctr.deleteF5Resource(poolName, POOL)
+			ctr.deleteF5Resource(poolName, POOL)
+			ctr.deletePreviouslyCreatedF5Resources(servicePortCreated, name)
+			return err
 		}
 		for _, n := range nodes.Items {
 			if utils.NodeReady(n) {
@@ -175,8 +177,8 @@ func (ctr *F5Controller) HandleConfigMapCreate(configMap *api.ConfigMap) error {
 		vs, err := ctr.f5.GetVirtualServer(virtualServerName)
 		if err != nil {
 			err = fmt.Errorf("Error getting virtual server %v. %v", virtualServerName, err)
-			defer ctr.deleteF5Resource(monitorName, MONITOR)
-			defer ctr.deleteF5Resource(poolName, POOL)
+			ctr.deleteF5Resource(poolName, POOL)
+			ctr.deletePreviouslyCreatedF5Resources(servicePortCreated, name)
 			return err
 		}
 
@@ -186,8 +188,8 @@ func (ctr *F5Controller) HandleConfigMapCreate(configMap *api.ConfigMap) error {
 			err := ctr.createVirtualServer(virtualServerName, poolName, dest)
 			if err != nil {
 				err = fmt.Errorf("Error creating virtual server %v. %v", virtualServerName, err)
-				defer ctr.deleteF5Resource(monitorName, MONITOR)
-				defer ctr.deleteF5Resource(poolName, POOL)
+				ctr.deleteF5Resource(poolName, POOL)
+				ctr.deletePreviouslyCreatedF5Resources(servicePortCreated, name)
 				return err
 			}
 			glog.Infof("Virtual server %v created.", virtualServerName)
@@ -201,6 +203,7 @@ func (ctr *F5Controller) HandleConfigMapCreate(configMap *api.ConfigMap) error {
 				glog.Infof("Virtual server %v has updated its destination to %v.", virtualServerName, dest)
 			}
 		}
+		servicePortCreated = append(servicePortCreated, servicePortName)
 	}
 
 	return nil
@@ -224,14 +227,14 @@ func (ctr *F5Controller) HandleConfigMapDelete(configMap *api.ConfigMap) {
 
 		poolName := utils.GetResourceName(POOL, name, servicePortName)
 		ctr.deleteF5Resource(poolName, POOL)
+	}
 
-		monitorName := utils.GetResourceName(MONITOR, name, servicePortName)
-		ctr.deleteF5Resource(monitorName, MONITOR)
+	monitorName := utils.GetResourceName(MONITOR, name)
+	ctr.deleteF5Resource(monitorName, MONITOR)
 
-		err = ctr.ipManager.DeleteVirtualIP(name)
-		if err != nil {
-			glog.Errorf("Error deleting Virtual IP - %v", err)
-		}
+	err = ctr.ipManager.DeleteVirtualIP(name)
+	if err != nil {
+		glog.Errorf("Error deleting Virtual IP - %v", err)
 	}
 }
 
@@ -398,4 +401,18 @@ func (ctr *F5Controller) deleteF5Resource(resourceName string, resourceType stri
 		return
 	}
 	glog.Infof("%v %v Deleted", resourceType, resourceName)
+}
+
+func (ctr *F5Controller) deletePreviouslyCreatedF5Resources(portNameList []string, name string) {
+	if len(portNameList) != 0 {
+		for _, portName := range portNameList {
+			virtualServerName := utils.GetResourceName(VIRTUAL_SERVER, name, portName)
+			ctr.deleteF5Resource(virtualServerName, VIRTUAL_SERVER)
+
+			poolName := utils.GetResourceName(POOL, name, portName)
+			ctr.deleteF5Resource(poolName, POOL)
+		}
+	}
+	monitorName := utils.GetResourceName(MONITOR, name)
+	ctr.deleteF5Resource(monitorName, MONITOR)
 }
