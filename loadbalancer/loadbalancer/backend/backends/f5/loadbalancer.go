@@ -31,6 +31,7 @@ type F5Controller struct {
 	configMapLabelKey   string
 	configMapLabelValue string
 	ipManager           *controllers.IPManager
+	namespace           string
 }
 
 func init() {
@@ -58,6 +59,7 @@ func NewF5Controller(kubeClient *unversioned.Client, watchNamespace string, conf
 		configMapLabelKey:   configLabelKey,
 		configMapLabelValue: configLabelValue,
 		ipManager:           ipMgr,
+		namespace:           ns,
 	}
 	return &lbControl, nil
 }
@@ -69,16 +71,19 @@ func (ctr *F5Controller) Name() string {
 
 // GetBindIP returns the IP used by users to access their apps
 func (ctr *F5Controller) GetBindIP(name string) (string, error) {
-	virtualServerName := getResourceName(VIRTUAL_SERVER, name)
-	virtualServer, err := ctr.f5.GetVirtualServer(virtualServerName)
+	cmClient := ctr.kubeClient.ConfigMaps(ctr.namespace)
+	ipCm, err := cmClient.Get(ctr.ipManager.ConfigMapName)
 	if err != nil {
-		err = fmt.Errorf("Error getting virtual server %v. %v", virtualServerName, err)
+		err = fmt.Errorf("ConfigMap %v does not exist.", ctr.ipManager.ConfigMapName)
 		return "", err
 	}
-	if virtualServer == nil {
-		return "", nil
+	ipCmData := ipCm.Data
+	for k, v := range ipCmData {
+		if v == name {
+			return k, nil
+		}
 	}
-	return formatVirtualServerDestination(virtualServer.Destination), nil
+	return "", nil
 }
 
 // HandleConfigMapCreate creates a new F5 pool, nodes, monitor and virtual server to provide loadbalancing to the app defined in the configmap
@@ -93,11 +98,6 @@ func (ctr *F5Controller) HandleConfigMapCreate(configMap *api.ConfigMap) error {
 		err = fmt.Errorf("Error getting service object %v/%v. %v", namespace, serviceName, err)
 		return err
 	}
-	servicePort := serviceObj.Spec.Ports[0]
-	if servicePort.NodePort == 0 {
-		err = fmt.Errorf("NodePort is needed for loadbalancer")
-		return err
-	}
 
 	//generate Virtual IP
 	bindIP, err := ctr.ipManager.GenerateVirtualIP(configMap)
@@ -106,112 +106,137 @@ func (ctr *F5Controller) HandleConfigMapCreate(configMap *api.ConfigMap) error {
 		return err
 	}
 
-	monitorName := getResourceName(MONITOR, name)
-	monExist, err := ctr.monitorExist(monitorName)
-	if err != nil {
-		err = fmt.Errorf("Error accessing monitors. %v", err)
-		return err
-	}
-	if !monExist {
-		err = ctr.f5.CreateMonitor(monitorName, MONITOR_PROTOCOL, 5, 16, "", "")
-		if err != nil {
-			err = fmt.Errorf("Could not create monitor %v. %v", monitorName, err)
-			return err
-		}
-		glog.Infof("Monitor %v created.", monitorName)
+	if len(serviceObj.Spec.Ports) == 0 {
+		return fmt.Errorf("Could not find any port from service %v.", serviceObj.Name)
 	}
 
-	poolName := getResourceName(POOL, name)
-	pool, err := ctr.f5.GetPool(poolName)
-	if err != nil {
-		err = fmt.Errorf("Error getting pool %v. %v", poolName, err)
-		defer ctr.deleteF5Resource(monitorName, MONITOR)
-		return err
-	}
-	if pool == nil {
-		err = ctr.createPool(poolName, monitorName)
+	for _, p := range serviceObj.Spec.Ports {
+		servicePortName := p.Name
+		if p.NodePort == 0 {
+			err = fmt.Errorf("NodePort is needed for loadbalancer")
+			return err
+		}
+
+		monitorName := utils.GetResourceName(MONITOR, name, servicePortName)
+		monExist, err := ctr.monitorExist(monitorName)
 		if err != nil {
-			err = fmt.Errorf("Error creating pool %v. %v", poolName, err)
+			err = fmt.Errorf("Error accessing monitors. %v", err)
+			return err
+		}
+		if !monExist {
+			err = ctr.f5.CreateMonitor(monitorName, MONITOR_PROTOCOL, 5, 16, "", "")
+			if err != nil {
+				err = fmt.Errorf("Could not create monitor %v. %v", monitorName, err)
+				return err
+			}
+			glog.Infof("Monitor %v created.", monitorName)
+		}
+
+		poolName := utils.GetResourceName(POOL, name, servicePortName)
+		pool, err := ctr.f5.GetPool(poolName)
+		if err != nil {
+			err = fmt.Errorf("Error getting pool %v. %v", poolName, err)
 			defer ctr.deleteF5Resource(monitorName, MONITOR)
 			return err
 		}
-		glog.Infof("Pool %v created.", poolName)
-	}
-
-	// Add nodes to pool
-	nodes, err := ctr.kubeClient.Nodes().List(api.ListOptions{})
-	if err != nil {
-		glog.Errorf("Error listing nodes %v", err)
-		defer ctr.deleteF5Resource(monitorName, MONITOR)
-		defer ctr.deleteF5Resource(poolName, POOL)
-	}
-	for _, n := range nodes.Items {
-		if utils.NodeReady(n) {
-			node, err := ctr.f5.GetNode(n.Name)
+		if pool == nil {
+			err = ctr.createPool(poolName, monitorName)
 			if err != nil {
-				glog.Errorf("Error getting Node %v. %v", n.Name, err)
-				continue
+				err = fmt.Errorf("Error creating pool %v. %v", poolName, err)
+				defer ctr.deleteF5Resource(monitorName, MONITOR)
+				return err
 			}
-			member := node.Name + ":" + strconv.Itoa(int(servicePort.NodePort))
-			ctr.f5.AddPoolMember(poolName, member)
-			// Not checking for error since there is a F5 bug that returns error even if the request was successful
-			// https://devcentral.f5.com/questions/icontrol-rest-404-despite-success-when-adding-pool-member
-			glog.Infof("Member %v added to pool %v.", member, poolName)
+			glog.Infof("Pool %v created.", poolName)
 		}
-	}
 
-	virtualServerName := getResourceName(VIRTUAL_SERVER, name)
-	vs, err := ctr.f5.GetVirtualServer(virtualServerName)
-	if err != nil {
-		err = fmt.Errorf("Error getting virtual server %v. %v", virtualServerName, err)
-		defer ctr.deleteF5Resource(monitorName, MONITOR)
-		defer ctr.deleteF5Resource(poolName, POOL)
-		return err
-	}
-	bindPort, _ := strconv.Atoi(config["bind-port"])
-	dest := fmt.Sprintf("%s:%d", bindIP, bindPort)
-	if vs == nil {
-		err := ctr.createVirtualServer(virtualServerName, poolName, dest)
+		// Add nodes to pool
+		nodes, err := ctr.kubeClient.Nodes().List(api.ListOptions{})
 		if err != nil {
-			err = fmt.Errorf("Error creating virtual server %v. %v", virtualServerName, err)
+			glog.Errorf("Error listing nodes %v", err)
+			defer ctr.deleteF5Resource(monitorName, MONITOR)
+			defer ctr.deleteF5Resource(poolName, POOL)
+		}
+		for _, n := range nodes.Items {
+			if utils.NodeReady(n) {
+				node, err := ctr.f5.GetNode(n.Name)
+				if err != nil {
+					glog.Errorf("Error getting Node %v. %v", n.Name, err)
+					continue
+				}
+				member := node.Name + ":" + strconv.Itoa(int(p.NodePort))
+				ctr.f5.AddPoolMember(poolName, member)
+				// Not checking for error since there is a F5 bug that returns error even if the request was successful
+				// https://devcentral.f5.com/questions/icontrol-rest-404-despite-success-when-adding-pool-member
+				glog.Infof("Member %v added to pool %v.", member, poolName)
+			}
+		}
+
+		virtualServerName := utils.GetResourceName(VIRTUAL_SERVER, name, servicePortName)
+		vs, err := ctr.f5.GetVirtualServer(virtualServerName)
+		if err != nil {
+			err = fmt.Errorf("Error getting virtual server %v. %v", virtualServerName, err)
 			defer ctr.deleteF5Resource(monitorName, MONITOR)
 			defer ctr.deleteF5Resource(poolName, POOL)
 			return err
 		}
-		glog.Infof("Virtual server %v created.", virtualServerName)
-	} else {
-		if dest != formatVirtualServerDestination(vs.Destination) {
-			vs.Destination = dest
-			err = ctr.f5.ModifyVirtualServer(virtualServerName, vs)
+
+		bindPort := p.Port
+		dest := fmt.Sprintf("%s:%d", bindIP, bindPort)
+		if vs == nil {
+			err := ctr.createVirtualServer(virtualServerName, poolName, dest)
 			if err != nil {
-				glog.Errorf("Error updating virtual server %v destination %v: %v", virtualServerName, dest, err)
+				err = fmt.Errorf("Error creating virtual server %v. %v", virtualServerName, err)
+				defer ctr.deleteF5Resource(monitorName, MONITOR)
+				defer ctr.deleteF5Resource(poolName, POOL)
+				return err
 			}
-			glog.Infof("Virtual server %v has updated its destination to %v.", virtualServerName, dest)
+			glog.Infof("Virtual server %v created.", virtualServerName)
+		} else {
+			if dest != formatVirtualServerDestination(vs.Destination) {
+				vs.Destination = dest
+				err = ctr.f5.ModifyVirtualServer(virtualServerName, vs)
+				if err != nil {
+					glog.Errorf("Error updating virtual server %v destination %v: %v", virtualServerName, dest, err)
+				}
+				glog.Infof("Virtual server %v has updated its destination to %v.", virtualServerName, dest)
+			}
 		}
 	}
+
 	return nil
 }
 
 // HandleConfigMapDelete delete all the resources created in F5 for load balancing an app
-func (ctr *F5Controller) HandleConfigMapDelete(name string) {
-	virtualServerName := getResourceName(VIRTUAL_SERVER, name)
-	ctr.deleteF5Resource(virtualServerName, VIRTUAL_SERVER)
-
-	poolName := getResourceName(POOL, name)
-	ctr.deleteF5Resource(poolName, POOL)
-
-	monitorName := getResourceName(MONITOR, name)
-	ctr.deleteF5Resource(monitorName, MONITOR)
-
-	err := ctr.ipManager.DeleteVirtualIP(name)
+func (ctr *F5Controller) HandleConfigMapDelete(configMap *api.ConfigMap) {
+	name := configMap.Namespace + "-" + configMap.Name
+	cmData := configMap.Data
+	serviceName := cmData["target-service-name"]
+	namespace := cmData["namespace"]
+	serviceObj, err := ctr.kubeClient.Services(namespace).Get(serviceName)
 	if err != nil {
-		glog.Errorf("Error deleting Virtual IP - %v", err)
+		err = fmt.Errorf("Error getting service object %v/%v. %v", namespace, serviceName, err)
+	}
+	for _, p := range serviceObj.Spec.Ports {
+		servicePortName := p.Name
+
+		virtualServerName := utils.GetResourceName(VIRTUAL_SERVER, name, servicePortName)
+		ctr.deleteF5Resource(virtualServerName, VIRTUAL_SERVER)
+
+		poolName := utils.GetResourceName(POOL, name, servicePortName)
+		ctr.deleteF5Resource(poolName, POOL)
+
+		monitorName := utils.GetResourceName(MONITOR, name, servicePortName)
+		ctr.deleteF5Resource(monitorName, MONITOR)
+
+		err = ctr.ipManager.DeleteVirtualIP(name)
+		if err != nil {
+			glog.Errorf("Error deleting Virtual IP - %v", err)
+		}
 	}
 }
 
 // HandleNodeCreate creates new member for this node in every pool
 func (ctr *F5Controller) HandleNodeCreate(node *api.Node) {
-
 	n, err := ctr.f5.GetNode(node.Name)
 	if err != nil {
 		glog.Errorf("Error getting Node %v. %v", node.Name, err)
@@ -238,27 +263,26 @@ func (ctr *F5Controller) HandleNodeCreate(node *api.Node) {
 		}
 	}
 
-	configMapNodePortMap := utils.GetLBConfigMapNodePortMap(ctr.kubeClient, ctr.watchNamespace, ctr.configMapLabelKey, ctr.configMapLabelValue)
-	for configmapName, nodePorts := range configMapNodePortMap {
-		poolName := getResourceName(POOL, configmapName)
-		member := node.Name + ":" + strconv.Itoa(nodePorts[0])
-		err = ctr.f5.AddPoolMember(poolName, member)
-		glog.Infof("Created member %v in pool %v", member, poolName)
+	configMapNodePortMap := utils.GetPoolNodePortMap(ctr.kubeClient, ctr.watchNamespace, ctr.configMapLabelKey, ctr.configMapLabelValue)
+	for configmapPoolName, nodePort := range configMapNodePortMap {
+		member := node.Name + ":" + strconv.Itoa(nodePort)
+		err = ctr.f5.AddPoolMember(configmapPoolName, member)
+		glog.Infof("Created member %v in pool %v", member, configmapPoolName)
 	}
 }
 
 // HandleNodeDelete deletes member for this node
 func (ctr *F5Controller) HandleNodeDelete(node *api.Node) {
-	configMapNodePortMap := utils.GetLBConfigMapNodePortMap(ctr.kubeClient, ctr.watchNamespace, ctr.configMapLabelKey, ctr.configMapLabelValue)
-	for configmapName, nodePorts := range configMapNodePortMap {
-		poolName := getResourceName(POOL, configmapName)
-		member := node.Name + ":" + strconv.Itoa(nodePorts[0])
-		err := ctr.f5.DeletePoolMember(poolName, member)
+
+	configMapNodePortMap := utils.GetPoolNodePortMap(ctr.kubeClient, ctr.watchNamespace, ctr.configMapLabelKey, ctr.configMapLabelValue)
+	for configmapPoolName, nodePort := range configMapNodePortMap {
+		member := node.Name + ":" + strconv.Itoa(nodePort)
+		err := ctr.f5.DeletePoolMember(configmapPoolName, member)
 		if err != nil {
-			glog.Errorf("Could not delete member %v from pool %v. %v", member, poolName, err)
+			glog.Errorf("Could not delete member %v from pool %v. %v", member, configmapPoolName, err)
 			continue
 		}
-		glog.Infof("Deleted member %v for pool %v", member, poolName)
+		glog.Infof("Deleted member %v for pool %v", member, configmapPoolName)
 	}
 }
 
@@ -356,10 +380,6 @@ func formatVirtualServerDestination(destination string) string {
 	// /Commmon/<ip>::<port> -> <ip>:<port>
 	res := strings.Split(destination, "/")
 	return res[len(res)-1]
-}
-
-func getResourceName(resourceType string, names ...string) string {
-	return strings.Join(names, "-") + "-" + resourceType
 }
 
 func (ctr *F5Controller) deleteF5Resource(resourceName string, resourceType string) {

@@ -118,10 +118,10 @@ func (lbControl *LoadbalancerDaemonController) HandleConfigMapCreate(configMap *
 	return nil
 }
 
-// HandleConfigMapDelete the lbaas loadbalancer resource
-func (lbControl *LoadbalancerDaemonController) HandleConfigMapDelete(name string) {
+func (lbControl *LoadbalancerDaemonController) HandleConfigMapDelete(configMap *api.ConfigMap) {
 	// Block execution until the ip config map gets updated
 	configMapMutex.Lock()
+	name := configMap.Namespace + "-" + configMap.Name
 	glog.Infof("Deleting group %v from daemon configmap", name)
 	daemonCM := lbControl.getDaemonConfigMap()
 	daemonData := daemonCM.Data
