@@ -39,7 +39,20 @@ func init() {
 
 // NewF5Controller creates a F5 controller
 func NewF5Controller(kubeClient *unversioned.Client, watchNamespace string, conf map[string]string, configLabelKey, configLabelValue string) (backend.BackendController, error) {
-	f5Session := bigip.NewSession(os.Getenv("F5_HOST"), os.Getenv("F5_USER"), os.Getenv("F5_PASSWORD"))
+	f5Host := os.Getenv("F5_HOST")
+	f5User := os.Getenv("F5_USER")
+	f5Password := os.Getenv("F5_PASSWORD")
+
+	if f5Host == "" && f5User == "" && f5Password == "" {
+		glog.Fatalln("F5_HOST, F5_USER, F5_PASSWORD env variables not set")
+	} else if f5Host == "" {
+		glog.Fatalln("F5_HOST env variable not set")
+	} else if f5User == "" {
+		glog.Fatalln("F5_USER env variable not set")
+	} else if f5Password == "" {
+		glog.Fatalln("F5_PASSWORD env variable not set")
+	}
+	f5Session := bigip.NewSession(f5Host, f5User, f5Password)
 
 	ns := os.Getenv("POD_NAMESPACE")
 	if ns == "" {
@@ -218,7 +231,14 @@ func (ctr *F5Controller) HandleNodeCreate(node *api.Node) {
 
 	n, err := ctr.f5.GetNode(node.Name)
 	if err != nil {
-		glog.Errorf("Error getting Node %v. %v", node.Name, err)
+		// check if its an authentication error
+		errString := err.Error()
+		errCode := strings.Split(errString, "::")
+		if strings.Contains(errCode[0], "401") {
+			glog.Fatalf("Authentication Error, wrong Username/password provided ")
+		} else {
+			glog.Errorf("Error getting Node %v. %v ", node.Name, err.Error())
+		}
 	}
 	ip, err := utils.GetNodeHostIP(*node)
 	if err != nil {
