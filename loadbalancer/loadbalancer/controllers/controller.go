@@ -201,19 +201,14 @@ func configmapsEqual(m1 map[string]string, m2 map[string]string) bool {
 
 // update user configmap with status
 func (lbController *LoadBalancerController) updateConfigMapStatusBindIP(errMessage string, bindIP string, configMap *api.ConfigMap) {
-	var statusMsg string
 	configMapData := configMap.Data
 
 	//set status
 	if errMessage != "" {
-		statusMsg = "ERROR : " + errMessage
-	} else {
-		statusMsg = "SUCCESS"
-	}
-	configMapData["status"] = statusMsg
-
-	//set bind IP
-	if bindIP != "" {
+		configMapData["status"] = "ERROR : " + errMessage
+		delete(configMapData, "bind-ip")
+	} else if bindIP != "" {
+		configMapData["status"] = "SUCCESS"
 		configMapData["bind-ip"] = bindIP
 	}
 
