@@ -141,9 +141,9 @@ func NodeReady(node api.Node) bool {
 	return false
 }
 
-// GetLBConfigMapNodePortMap fetches all the configmaps and returns a map of loadbalancer configmaps to node port
-func GetLBConfigMapNodePortMap(client *unversioned.Client, configMapNamespace string, configMapLabelKey, configMapLabelValue string) map[string][]int {
-	configMapNodePortMap := make(map[string][]int)
+// GetPoolNodePortMap fetches all the configmaps and returns a map of loadbalancer pool to node port
+func GetPoolNodePortMap(client *unversioned.Client, configMapNamespace string, configMapLabelKey, configMapLabelValue string) map[string]int {
+	configMapNodePortMap := make(map[string]int)
 	labelSelector := labels.Set{configMapLabelKey: configMapLabelValue}.AsSelector()
 	opt := api.ListOptions{LabelSelector: labelSelector}
 	configmaps, err := client.ConfigMaps(configMapNamespace).List(opt)
@@ -155,6 +155,7 @@ func GetLBConfigMapNodePortMap(client *unversioned.Client, configMapNamespace st
 		cmData := cm.Data
 		namespace := cmData["namespace"]
 		serviceName := cmData["target-service-name"]
+		name := namespace + "-" + cm.Name
 		serviceObj, err := client.Services(namespace).Get(serviceName)
 		if err != nil {
 			glog.Errorf("Error getting service object %v/%v. %v", namespace, serviceName, err)
@@ -171,12 +172,17 @@ func GetLBConfigMapNodePortMap(client *unversioned.Client, configMapNamespace st
 			continue
 		}
 
-		ports := []int{}
 		for _, port := range serviceObj.Spec.Ports {
-			ports = append(ports, int(port.NodePort))
+			servicePortName := port.Name
+			poolName := GetResourceName("pool", name, servicePortName)
+			nodePort := int(port.NodePort)
+			configMapNodePortMap[poolName] = nodePort
 		}
-
-		configMapNodePortMap[namespace+"-"+cm.Name] = ports
 	}
 	return configMapNodePortMap
+}
+
+// GetResourceName returns given args seperated by hypen
+func GetResourceName(resourceType string, names ...string) string {
+	return strings.Join(names, "-") + "-" + resourceType
 }

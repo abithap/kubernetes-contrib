@@ -40,7 +40,7 @@ var ipConfigMapMutex sync.Mutex
 var empty struct{}
 
 type IPManager struct {
-	configMapName string
+	ConfigMapName string
 	namespace     string
 	userNamespace string
 	ipRange       ipRange
@@ -69,7 +69,7 @@ func NewIPManager(kubeClient *unversioned.Client, ipCmNamespace, userNamespace, 
 		endIP:   endIP,
 	}
 	ipManager := IPManager{
-		configMapName: ipConfigMapName,
+		ConfigMapName: ipConfigMapName,
 		namespace:     ipCmNamespace,
 		userNamespace: userNamespace,
 		ipRange:       ipRange,
@@ -194,12 +194,12 @@ func (ipManager *IPManager) DeleteVirtualIP(name string) error {
 //gets the ip configmap or creates if it doesn't exist
 func (ipManager *IPManager) getConfigMap() *api.ConfigMap {
 	cmClient := ipManager.kubeClient.ConfigMaps(ipManager.namespace)
-	cm, err := cmClient.Get(ipManager.configMapName)
+	cm, err := cmClient.Get(ipManager.ConfigMapName)
 	if err != nil {
-		glog.Infof("ConfigMap %v does not exist. Creating...", ipManager.configMapName)
+		glog.Infof("ConfigMap %v does not exist. Creating...", ipManager.ConfigMapName)
 		configMapRequest := &api.ConfigMap{
 			ObjectMeta: api.ObjectMeta{
-				Name:      ipManager.configMapName,
+				Name:      ipManager.ConfigMapName,
 				Namespace: ipManager.namespace,
 			},
 		}
