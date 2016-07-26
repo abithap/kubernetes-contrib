@@ -3,12 +3,14 @@ package daemon
 import (
 	"fmt"
 	"os"
+	"reflect"
 	"strconv"
 	"sync"
 
 	"github.com/golang/glog"
 	"k8s.io/contrib/loadbalancer/loadbalancer/backend"
 	"k8s.io/contrib/loadbalancer/loadbalancer/controllers"
+	"k8s.io/contrib/loadbalancer/loadbalancer/utils"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/client/unversioned"
 )
@@ -20,6 +22,7 @@ const (
 )
 
 var configMapMutex sync.Mutex
+var empty struct{}
 
 // LoadbalancerDaemonController Controller to communicate with loadbalancer-daemon controllers
 type LoadbalancerDaemonController struct {
@@ -55,6 +58,33 @@ func NewLoadbalancerDaemonController(kubeClient *unversioned.Client, watchNamesp
 		kubeClient:    kubeClient,
 		namespace:     ns,
 		ipManager:     ipMgr,
+	}
+
+	// sync daemon configmap data with user configmaps
+	olddaemonCm := lbControl.getDaemonConfigMap()
+	daemonCm := lbControl.getDaemonConfigMap()
+	daemonData := daemonCm.Data
+
+	if len(daemonData) != 0 {
+		userCms := utils.GetUserConfigMaps(kubeClient, configLabelKey, configLabelValue, watchNamespace)
+		cmGroup := utils.GetConfigMapGroups(daemonData)
+
+		// delete daemon group if user configmap doesnt exist
+		deleteCm := make(map[string]struct{})
+		for k := range cmGroup {
+			if _, ok := userCms[k]; !ok {
+				deleteCm[k] = empty
+			}
+		}
+		updatedDaemonCm := utils.DeleteConfigMapGroups(daemonData, deleteCm)
+
+		//update Daemon Configmap if its changed
+		if !reflect.DeepEqual(olddaemonCm.Data, updatedDaemonCm) {
+			_, err := lbControl.kubeClient.ConfigMaps(lbControl.namespace).Update(daemonCm)
+			if err != nil {
+				glog.Infof("Error updating daemon configmap %v: %v", daemonCm.Name, err)
+			}
+		}
 	}
 	return &lbControl, nil
 }

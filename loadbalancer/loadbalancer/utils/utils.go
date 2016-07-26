@@ -21,6 +21,8 @@ type diff struct {
 
 type orderedDiffs []diff
 
+var empty struct{}
+
 func (d orderedDiffs) Len() int      { return len(d) }
 func (d orderedDiffs) Swap(i, j int) { d[i], d[j] = d[j], d[i] }
 func (d orderedDiffs) Less(i, j int) bool {
@@ -42,6 +44,15 @@ func GetConfigMapGroups(cm map[string]string) sets.String {
 		configMapGroups.Insert(getGroupName(k))
 	}
 	return configMapGroups
+}
+
+func DeleteConfigMapGroups(cm map[string]string, deleteCms map[string]struct{}) map[string]string {
+	for k := range cm {
+		if _, ok := deleteCms[getGroupName(k)]; ok {
+			delete(cm, k)
+		}
+	}
+	return cm
 }
 
 func getGroupName(key string) string {
@@ -185,4 +196,24 @@ func GetPoolNodePortMap(client *unversioned.Client, configMapNamespace string, c
 // GetResourceName returns given args seperated by hypen
 func GetResourceName(resourceType string, names ...string) string {
 	return strings.Join(names, "-") + "-" + resourceType
+}
+
+// GetUserConfigMaps gets list of all user configmaps
+func GetUserConfigMaps(kubeClient *unversioned.Client, configLabelKey, configLabelValue, namespace string) map[string]struct{} {
+	var opts api.ListOptions
+	opts.LabelSelector = labels.Set{configLabelKey: configLabelValue}.AsSelector()
+	cms, err := kubeClient.ConfigMaps(namespace).List(opts)
+	if err != nil {
+		glog.Infof("Error getting user configmap list %v", err)
+		return nil
+	}
+
+	cmList := cms.Items
+	userCms := make(map[string]struct{})
+	for _, cm := range cmList {
+		name := cm.Namespace + "-" + cm.Name
+		userCms[name] = empty
+	}
+
+	return userCms
 }

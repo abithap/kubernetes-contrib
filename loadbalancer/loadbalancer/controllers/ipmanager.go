@@ -24,9 +24,9 @@ import (
 	"sync"
 
 	"github.com/golang/glog"
+	"k8s.io/contrib/loadbalancer/loadbalancer/utils"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/client/unversioned"
-	"k8s.io/kubernetes/pkg/labels"
 )
 
 const (
@@ -37,7 +37,6 @@ var ErrIPRangeExhausted = errors.New("Exhausted given Virtual IP range")
 
 var ipConfigMutex sync.Mutex
 var ipConfigMapMutex sync.Mutex
-var empty struct{}
 
 type IPManager struct {
 	ConfigMapName string
@@ -78,7 +77,7 @@ func NewIPManager(kubeClient *unversioned.Client, ipCmNamespace, userNamespace, 
 	}
 
 	// check if VIP has changed between failover
-	ipCm := ipManager.getConfigMap()
+	ipCm := ipManager.getIPConfigMap()
 	ipCmData := ipCm.Data
 	if len(ipCmData) != 0 {
 		for k := range ipCmData {
@@ -95,26 +94,14 @@ func NewIPManager(kubeClient *unversioned.Client, ipCmNamespace, userNamespace, 
 	}
 
 	// sync deleted configmaps with ip configmap
-	ipMgrCm := ipManager.getConfigMap()
+	ipMgrCm := ipManager.getIPConfigMap()
 	ipMgrCmData := ipMgrCm.Data
 	if len(ipMgrCmData) != 0 {
-		var opts api.ListOptions
-		opts.LabelSelector = labels.Set{configLabelKey: configLabelValue}.AsSelector()
-		cms, err := kubeClient.ConfigMaps(userNamespace).List(opts)
-		if err != nil {
-			glog.Infof("Error syncing ipconfigmap %v", err)
-		}
-
-		cmList := cms.Items
-		currentCms := make(map[string]struct{})
-		for _, cm := range cmList {
-			name := cm.Namespace + "-" + cm.Name
-			currentCms[name] = empty
-		}
+		userCms := utils.GetUserConfigMaps(kubeClient, configLabelKey, configLabelValue, userNamespace)
 
 		//update ipconfigmap if user configmap got deleted between reloads
 		for k, v := range ipMgrCmData {
-			if _, ok := currentCms[v]; !ok {
+			if _, ok := userCms[v]; !ok {
 				delete(ipMgrCmData, k)
 			}
 		}
@@ -130,7 +117,7 @@ func NewIPManager(kubeClient *unversioned.Client, ipCmNamespace, userNamespace, 
 }
 
 func (ipManager *IPManager) checkConfigMap(cmName string) (bool, string) {
-	cm := ipManager.getConfigMap()
+	cm := ipManager.getIPConfigMap()
 	cmData := cm.Data
 	for k, v := range cmData {
 		if v == cmName {
@@ -158,7 +145,7 @@ func (ipManager *IPManager) GenerateVirtualIP(configMap *api.ConfigMap) (string,
 	}
 
 	//update ipConfigMap to add new configMap entry
-	ipConfigMap := ipManager.getConfigMap()
+	ipConfigMap := ipManager.getIPConfigMap()
 	ipConfigMapData := ipConfigMap.Data
 	name := configMap.Namespace + "-" + configMap.Name
 	ipConfigMapData[virtualIP] = name
@@ -173,7 +160,7 @@ func (ipManager *IPManager) GenerateVirtualIP(configMap *api.ConfigMap) (string,
 }
 
 func (ipManager *IPManager) DeleteVirtualIP(name string) error {
-	ipConfigMap := ipManager.getConfigMap()
+	ipConfigMap := ipManager.getIPConfigMap()
 	ipConfigMapData := ipConfigMap.Data
 
 	//delete the configMap entry
@@ -193,7 +180,7 @@ func (ipManager *IPManager) DeleteVirtualIP(name string) error {
 }
 
 //gets the ip configmap or creates if it doesn't exist
-func (ipManager *IPManager) getConfigMap() *api.ConfigMap {
+func (ipManager *IPManager) getIPConfigMap() *api.ConfigMap {
 	cmClient := ipManager.kubeClient.ConfigMaps(ipManager.namespace)
 	cm, err := cmClient.Get(ipManager.ConfigMapName)
 	if err != nil {
@@ -217,7 +204,7 @@ func (ipManager *IPManager) getFreeVirtualIP() (string, error) {
 	startIPV4 := net.ParseIP(ipManager.ipRange.startIP).To4()
 	endIPV4 := net.ParseIP(ipManager.ipRange.endIP).To4()
 	temp := startIPV4
-	ipConfigMap := ipManager.getConfigMap()
+	ipConfigMap := ipManager.getIPConfigMap()
 	ipConfigMapData := ipConfigMap.Data
 
 	//check if the start IP is allocated
